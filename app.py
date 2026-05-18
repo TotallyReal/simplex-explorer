@@ -1246,10 +1246,5 @@ def render_history(history):
 instructions.register_callbacks(app)
 
 if __name__ == '__main__':
-    import signal
-    import subprocess
     PORT = int(os.environ.get('PORT', 8050))
-    result = subprocess.run(['lsof', '-ti', f':{PORT}'], capture_output=True, text=True)
-    for pid in result.stdout.split():
-        os.kill(int(pid), signal.SIGKILL)
     app.run(debug=False, host='0.0.0.0', port=PORT)
