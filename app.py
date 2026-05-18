@@ -71,6 +71,58 @@ def xsub(v: int):
 def ysub(v: int):
     return html.Span(["y", html.Sub(str(v))])
 
+def build_phase1_lp(lp: LinearProgram) -> LinearProgram:
+    """
+    Construct the Phase I LP for finding a feasible basis.
+
+    For each infeasible row i (C[i] < 0):
+      - Flip that row's signs so C1[i] = -C[i] > 0.
+      - Introduce artificial variable z_k as the new basic variable.
+      - The original basic variable at row i becomes nonbasic.
+
+    Phase I objective: max -∑z_k  (≡ 0 at optimum iff original LP is feasible).
+
+    Artificial variables are assigned global indices n+m+1, n+m+2, …
+    """
+    infeasible = [i for i in range(lp.m) if lp.C[i] < 0]
+    p = len(infeasible)
+    if p == 0:
+        return lp
+
+    n, m = lp.n, lp.m
+    n1 = n + p  # Phase I nonbasic count
+
+    B1 = [[Fraction(0)] * n1 for _ in range(m)]
+    C1 = list(lp.C)
+
+    for i in range(m):
+        for j in range(n):
+            B1[i][j] = lp.B[i][j]
+
+    for k, i in enumerate(infeasible):
+        for j in range(n):
+            B1[i][j] = -lp.B[i][j]
+        C1[i] = -lp.C[i]
+        B1[i][n + k] = Fraction(1)   # coefficient of the displaced basic var (now nonbasic)
+
+    # Phase I objective: -∑z_k.  Substitute z_k = -C[i_k] - B[i_k]*x + y_{i_k}:
+    #   -∑z_k = ∑C[i_k]  +  ∑_j (∑_k B[i_k][j]) * x_j  -  ∑_k y_{i_k}
+    A1 = [Fraction(0)] * (n1 + 1)
+    for k, i in enumerate(infeasible):
+        A1[0] += lp.C[i]
+        for j in range(n):
+            A1[j + 1] += lp.B[i][j]
+        A1[n + k + 1] = Fraction(-1)
+
+    phase1 = LinearProgram(B1, C1, A1)
+    phase1.nonbasic_vars = list(lp.nonbasic_vars) + [lp.basic_vars[i] for i in infeasible]
+    phase1.basic_vars = list(lp.basic_vars)
+    for k, i in enumerate(infeasible):
+        phase1.basic_vars[i] = n + m + k + 1   # artificial z_k
+
+    return phase1
+
+
 def _default_editor_values(m: int, n: int) -> dict:
     return {
         'B': [['0'] * n for _ in range(m)],
@@ -487,6 +539,7 @@ main_area = html.Div([
     }),
     dcc.Store(id='original-lp'),
     dcc.Store(id='constraints-2d'),
+    dcc.Store(id='phase-store'),
     dcc.Store(id='editor-2d-meta', data={'m': 3}),
     dcc.Store(id='editor-2d-values', data={
         'a': [['1', '-1'], ['1', '0'], ['-1', '2']],
@@ -834,6 +887,7 @@ def validate_A(value):
     Output('history-store', 'data', allow_duplicate=True),
     Output('selection-store', 'data', allow_duplicate=True),
     Output('constraints-2d', 'data', allow_duplicate=True),
+    Output('phase-store', 'data', allow_duplicate=True),
     Output('editor-msg', 'children'),
     Input('btn-generate', 'n_clicks'),
     State('editor-tab-store', 'data'),
@@ -850,8 +904,9 @@ def validate_A(value):
     prevent_initial_call=True,
 )
 def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_vals, c_vals):
+    _nu8 = (no_update,) * 8
     if not n_clicks:
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return _nu8
 
     sel = {'entering_s': None, 'leaving_r': None}
 
@@ -865,15 +920,14 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
             C_lp = [parse_num(b[i]) for i in range(m)]
             lp = LinearProgram(B_lp, C_lp, A)
             lp_dict = lp_to_dict(lp)
-            # Store original inequalities for the geometry diagram (persists across pivots)
             constraints = {
                 'A_ub': [[float(parse_num(a[i][j])) for j in range(2)] for i in range(m)],
                 'b_ub': [float(parse_num(b[i])) for i in range(m)],
                 'c_obj': [float(c1), float(c2)],
             }
-            return lp_dict, lp_dict, 'view', [], sel, constraints, html.Div()
+            return lp_dict, lp_dict, 'view', [], sel, constraints, None, html.Div()
         except Exception as e:
-            return no_update, no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
+            return *_nu8[:7], html.Div(str(e), className="msg-error")
 
     m, n, B_str, C_str, A_str = _read_editor_state(meta, B_vals, C_vals, A_vals)
 
@@ -890,8 +944,7 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
             errors.append(f"A[{j}]")
 
     if errors:
-        msg = html.Div(f"Invalid values: {', '.join(errors)}", className="msg-error")
-        return no_update, no_update, no_update, no_update, no_update, no_update, msg
+        return *_nu8[:7], html.Div(f"Invalid values: {', '.join(errors)}", className="msg-error")
 
     try:
         B = [[parse_num(B_str[i][j]) for j in range(n)] for i in range(m)]
@@ -899,9 +952,9 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
         A = [parse_num(v) for v in A_str]
         lp = LinearProgram(B, C, A)
         lp_dict = lp_to_dict(lp)
-        return lp_dict, lp_dict, 'view', [], sel, None, html.Div()
+        return lp_dict, lp_dict, 'view', [], sel, None, None, html.Div()
     except Exception as e:
-        return no_update, no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
+        return *_nu8[:7], html.Div(str(e), className="msg-error")
 
 # ── Callbacks: Edit original / Edit current ────────────────────────────────────
 
@@ -1189,8 +1242,9 @@ def undo(n_clicks, history):
     Input('app-mode', 'data'),
     Input('font-size-store', 'data'),
     Input('constraints-2d', 'data'),
+    Input('phase-store', 'data'),
 )
-def render_system(lp_data, app_mode, font_size, constraints):
+def render_system(lp_data, app_mode, font_size, constraints, phase):
     if app_mode == 'edit' or not lp_data:
         return html.Div()
 
@@ -1206,19 +1260,30 @@ def render_system(lp_data, app_mode, font_size, constraints):
     _tab_selected = {**_tab_style, 'fontWeight': 'bold', 'borderTop': '2px solid #1976d2',
                      'borderBottom': 'none', 'color': '#1976d2'}
 
-    feasibility_badge = html.Span(
-        "Feasible" if is_feasible else "Infeasible",
-        style={
-            'fontSize': '13px',
-            'fontWeight': 'bold',
-            'padding': '3px 10px',
-            'borderRadius': '10px',
-            'marginLeft': '10px',
-            'background': '#e8f5e9' if is_feasible else '#ffebee',
-            'color': '#2e7d32' if is_feasible else '#c62828',
-            'border': f"1px solid {'#a5d6a7' if is_feasible else '#ef9a9a'}",
-        },
-    )
+    _badge_base = {
+        'fontSize': '13px',
+        'fontWeight': 'bold',
+        'padding': '3px 10px',
+        'borderRadius': '10px',
+        'marginLeft': '10px',
+    }
+    if is_feasible:
+        feasibility_badge = html.Span("Feasible", style={
+            **_badge_base,
+            'background': '#e8f5e9', 'color': '#2e7d32', 'border': '1px solid #a5d6a7',
+        })
+    elif phase == 'phase1':
+        feasibility_badge = html.Span("Phase I — finding feasible basis", style={
+            **_badge_base,
+            'background': '#fff8e1', 'color': '#e65100', 'border': '1px solid #ffcc80',
+        })
+    else:
+        feasibility_badge = html.Button("⚠ Infeasible — click to run Phase I", id='btn-start-phase1',
+            n_clicks=0, style={
+                **_badge_base,
+                'background': '#ffebee', 'color': '#c62828', 'border': '1px solid #ef9a9a',
+                'cursor': 'pointer',
+            })
 
     eq_latex = lp._to_latex_array_mathjax()
     mat_latex = '$$\n' + lp.to_latex(matrix_form=True) + '\n$$'
@@ -1277,8 +1342,9 @@ def render_system(lp_data, app_mode, font_size, constraints):
     Input('lp-store', 'data'),
     Input('selection-store', 'data'),
     Input('app-mode', 'data'),
+    Input('phase-store', 'data'),
 )
-def render_controls(lp_data, sel, app_mode):
+def render_controls(lp_data, sel, app_mode, phase):
     if app_mode == 'edit' or not lp_data:
         return html.Div()
 
@@ -1296,11 +1362,26 @@ def render_controls(lp_data, sel, app_mode):
     if is_unbounded:
         status = html.Div("LP appears unbounded.", className="msg-error")
     elif suggested is None:
-        sol = {f"x_{v}": frac_str(lp.C[i]) for i, v in enumerate(lp.basic_vars)}
-        sol.update({f"x_{v}": "0" for v in lp.nonbasic_vars})
-        sol_str = ", ".join(f"{k} = {v}" for k, v in sorted(sol.items()))
-        status = html.Div([html.B("Optimal! "), f"Objective = {frac_str(lp.A[0])}.  ", sol_str],
-                          className="msg-success")
+        if phase == 'phase1':
+            if lp.A[0] == 0:
+                status = html.Div([
+                    html.B("Phase I complete — feasible basis found.  "),
+                    html.Button("Return to original problem →", id='btn-phase2', n_clicks=0,
+                        style={'padding': '6px 16px', 'background': '#2e7d32', 'color': 'white',
+                               'border': 'none', 'borderRadius': '4px', 'cursor': 'pointer',
+                               'fontWeight': 'bold', 'marginLeft': '10px'}),
+                ], className="msg-success")
+            else:
+                status = html.Div(
+                    "Phase I optimal with objective < 0 — the original problem has no feasible solution.",
+                    className="msg-error",
+                )
+        else:
+            sol = {f"x_{v}": frac_str(lp.C[i]) for i, v in enumerate(lp.basic_vars)}
+            sol.update({f"x_{v}": "0" for v in lp.nonbasic_vars})
+            sol_str = ", ".join(f"{k} = {v}" for k, v in sorted(sol.items()))
+            status = html.Div([html.B("Optimal! "), f"Objective = {frac_str(lp.A[0])}.  ", sol_str],
+                              className="msg-success")
     else:
         status = html.Div()
 
@@ -1372,6 +1453,52 @@ def render_controls(lp_data, sel, app_mode):
         basis_section,
         auto_section,
     ])
+
+# ── Callbacks: Phase I / Phase II ─────────────────────────────────────────────
+
+@app.callback(
+    Output('lp-store', 'data', allow_duplicate=True),
+    Output('original-lp', 'data', allow_duplicate=True),
+    Output('phase-store', 'data', allow_duplicate=True),
+    Output('history-store', 'data', allow_duplicate=True),
+    Output('selection-store', 'data', allow_duplicate=True),
+    Input('btn-start-phase1', 'n_clicks'),
+    State('lp-store', 'data'),
+    prevent_initial_call=True,
+)
+def start_phase1(n_clicks, lp_data):
+    if not n_clicks or not lp_data:
+        return no_update, no_update, no_update, no_update, no_update
+    lp = dict_to_lp(lp_data)
+    phase1_lp = build_phase1_lp(lp)
+    sel = {'entering_s': None, 'leaving_r': None}
+    return lp_to_dict(phase1_lp), lp_data, 'phase1', [], sel
+
+
+@app.callback(
+    Output('lp-store', 'data', allow_duplicate=True),
+    Output('phase-store', 'data', allow_duplicate=True),
+    Output('history-store', 'data', allow_duplicate=True),
+    Output('selection-store', 'data', allow_duplicate=True),
+    Input('btn-phase2', 'n_clicks'),
+    State('lp-store', 'data'),
+    State('original-lp', 'data'),
+    prevent_initial_call=True,
+)
+def jump_to_phase2(n_clicks, phase1_data, original_data):
+    if not n_clicks or not phase1_data or not original_data:
+        return no_update, no_update, no_update, no_update
+    phase1_lp = dict_to_lp(phase1_data)
+    orig_lp = dict_to_lp(original_data)
+    # Extract the feasible basis: Phase I basic vars that belong to the original LP
+    n_orig = orig_lp.n + orig_lp.m
+    feasible_basis = [v for v in phase1_lp.basic_vars if v <= n_orig]
+    try:
+        orig_lp.set_basis(feasible_basis)
+    except Exception:
+        pass  # Degenerate case: use whatever basis we have
+    sel = {'entering_s': None, 'leaving_r': None}
+    return lp_to_dict(orig_lp), None, [], sel
 
 # ── Callback: History panel ────────────────────────────────────────────────────
 
