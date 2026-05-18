@@ -558,6 +558,16 @@ class LinearProgram:
     # Utility
     # ------------------------------------------------------------------
 
+    def current_point(self) -> dict:
+        """
+        Return the current basic feasible solution as {global_var_index: Fraction}.
+        Non-basic variables are 0; basic variables take their value from C.
+        """
+        point = {v: Fraction(0) for v in self.nonbasic_vars}
+        for i, v in enumerate(self.basic_vars):
+            point[v] = self.C[i]
+        return point
+
     def to_float(self) -> dict:
         """
         Return a dict of numpy float64 arrays for the current system state.
