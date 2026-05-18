@@ -480,6 +480,47 @@ class LinearProgram:
             f'\\]'
         )
 
+    def _to_latex_array_mathjax(self) -> str:
+        """LP system as alignedat for MathJax: variables align vertically, no unsupported commands."""
+        n = self.n
+        num_pairs = n + 3  # (label|var) + (|=) + (const|sign_1) + (x_1|sign_2) + ... + (x_n|)
+
+        def build_cells(label: str, var: str, rel: str,
+                        constant: Fraction, coeffs: list[Fraction]) -> list[str]:
+            const_str = _frac_to_latex(constant) if constant != 0 else ''
+            cells = [label, var, '', rel, const_str]
+            for c, v in zip(coeffs, self.nonbasic_vars):
+                if c == 0:
+                    cells.extend(['', ''])
+                else:
+                    sign = r'\;+\;' if c > 0 else r'\;-\;'
+                    abs_c = abs(c)
+                    coeff_str = '' if abs_c == 1 else _frac_to_latex(abs_c)
+                    cells.extend([sign, f'{coeff_str}x_{{{v}}}'])
+            return cells
+
+        rows: list[str] = []
+
+        rows.append(' & '.join(build_cells(
+            r'\max \quad', 'z', r'=\;',
+            self.A[0], [self.A[k + 1] for k in range(n)],
+        )))
+
+        for i in range(self.m):
+            bv = self.basic_vars[i]
+            label = r'\text{s.t.}\quad' if i == 0 else ''
+            rows.append(' & '.join(build_cells(
+                label, f'x_{{{bv}}}', r'=\;',
+                self.C[i], [self.B[i][j] for j in range(n)],
+            )))
+
+        # Non-negativity row: same column structure, empty variable cells
+        noneg = [r'\forall i \quad', 'x_i', '', r'\geq', '0'] + ['', ''] * n
+        rows.append(' & '.join(noneg))
+
+        body = ' \\\\\n'.join(rows)
+        return f'$$\n\\begin{{alignedat}}{{{num_pairs}}}\n{body}\n\\end{{alignedat}}\n$$'
+
     def _to_latex_matrix(self) -> str:
         # Objective row vector a^T
         a_vals = [self.A[k + 1] for k in range(self.n)]

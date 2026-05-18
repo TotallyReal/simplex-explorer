@@ -401,8 +401,8 @@ sidebar = html.Div([
         html.Label("LaTeX font size", style={'fontSize': '12px', 'fontWeight': 'bold'}),
         dcc.Slider(
             id='font-size-slider',
-            min=8, max=20, step=1, value=12,
-            marks={8: '8', 10: '10', 12: '12', 14: '14', 16: '16', 18: '18', 20: '20'},
+            min=5, max=25, step=1, value=16,
+            marks={d: str(d) for d in range(5,30,5)},
             tooltip={'placement': 'bottom', 'always_visible': False},
         ),
         # html.Label("Row height multiplier", style={'fontSize': '12px', 'fontWeight': 'bold', 'marginTop': '12px'}),
@@ -941,7 +941,7 @@ def perform_pivot(n_clicks, lp_data, sel, history, img_b64):
     entering_v = lp.nonbasic_vars[entering_s]
     leaving_v  = lp.basic_vars[leaving_r]
     snap = lp_to_dict(lp)
-    history = list(history) + [(f"Enter x{entering_v}, leave x{leaving_v}", snap, lp.to_latex(), img_b64)]
+    history = list(history) + [(f"Enter x{entering_v}, leave x{leaving_v}", snap, lp._to_latex_array_mathjax(), img_b64)]
     lp.swap_variables(leaving_v, entering_v)
     return lp_to_dict(lp), {'entering_s': None, 'leaving_r': None}, history
 
@@ -965,7 +965,7 @@ def apply_basis(n_clicks, basis_text, lp_data, history, img_b64):
         indices = [int(x.strip()) for x in basis_text.split(',') if x.strip()]
         lp = dict_to_lp(lp_data)
         snap = lp_to_dict(lp)
-        latex = lp.to_latex()
+        latex = lp._to_latex_array_mathjax()
         lp.set_basis(indices)
         label = f"Set basis → {{{', '.join(f'x{i}' for i in indices)}}}"
         history = list(history) + [(label, snap, latex, img_b64)]
@@ -998,7 +998,7 @@ def auto_pivot(n_step, n_solve, lp_data, history, rule, img_b64):
             if p is None:
                 return no_update, no_update, html.Div("Already optimal.", className="msg-info")
             ev, lv = p
-            history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp.to_latex(), img_b64))
+            history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp._to_latex_array_mathjax(), img_b64))
             lp.swap_variables(lv, ev)
         else:
             steps = 0
@@ -1008,7 +1008,7 @@ def auto_pivot(n_step, n_solve, lp_data, history, rule, img_b64):
                     break
                 ev, lv = p
                 # For multi-step solve, intermediate images are not available
-                history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp.to_latex(), None))
+                history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp._to_latex_array_mathjax(), None))
                 lp.swap_variables(lv, ev)
                 steps += 1
             return lp_to_dict(lp), history, html.Div(f"Solved in {steps} step(s).", className="msg-success")
@@ -1032,7 +1032,7 @@ def undo(n_clicks, history):
     _, snap, _, _ = history.pop()
     return snap, history
 
-# ── Callback: System section (pdflatex — only on LP/mode/font change) ──────────
+# ── Callback: System section (MathJax rendering) ──────────────────────────────
 
 @app.callback(
     Output('system-section', 'children'),
@@ -1040,17 +1040,13 @@ def undo(n_clicks, history):
     Input('lp-store', 'data'),
     Input('app-mode', 'data'),
     Input('font-size-store', 'data'),
-    Input('panel-mult-store', 'data'),
-    Input('panel-pad-store', 'data'),
 )
-def render_system(lp_data, app_mode, font_size, panel_mult, panel_pad):
+def render_system(lp_data, app_mode, font_size):
     if app_mode == 'edit' or not lp_data:
         return html.Div(), no_update
 
-    _renderer.font_size = font_size
     lp = dict_to_lp(lp_data)
     is_feasible = all(c >= 0 for c in lp.C)
-    panel_height = (lp.m + 1) * panel_mult * _renderer.font_size + panel_pad
 
     _tab_style = {
         'padding': '4px 14px',
@@ -1075,8 +1071,10 @@ def render_system(lp_data, app_mode, font_size, panel_mult, panel_pad):
         },
     )
 
-    eq_b64 = _render_b64(lp.to_latex(matrix_form=False))
-    mat_b64 = _render_b64(lp.to_latex(matrix_form=True))
+    eq_latex = lp._to_latex_array_mathjax()
+    mat_latex = '$$\n' + lp.to_latex(matrix_form=True) + '\n$$'
+
+    _md_style = {'paddingTop': '10px', 'paddingLeft': '20px', 'fontSize': f'{font_size}pt'}
 
     section = html.Div([
         html.Div([
@@ -1085,10 +1083,10 @@ def render_system(lp_data, app_mode, font_size, panel_mult, panel_pad):
         ], style={'marginBottom': '8px'}),
         dcc.Tabs([
             dcc.Tab(label='Equations', style=_tab_style, selected_style=_tab_selected, children=[
-                _b64_to_img_div(eq_b64, panel_height),
+                dcc.Markdown(eq_latex, mathjax=True, style=_md_style),
             ]),
             dcc.Tab(label='Matrix form', style=_tab_style, selected_style=_tab_selected, children=[
-                _b64_to_img_div(mat_b64, panel_height),
+                dcc.Markdown(mat_latex, mathjax=True, style=_md_style),
             ]),
             dcc.Tab(label='Raw LaTeX', style=_tab_style, selected_style=_tab_selected, children=[
                 html.Pre(lp.to_latex(matrix_form=False),
@@ -1099,7 +1097,7 @@ def render_system(lp_data, app_mode, font_size, panel_mult, panel_pad):
         html.Hr(),
     ])
 
-    return section, eq_b64
+    return section, no_update
 
 # ── Callback: Controls section (fast — no pdflatex) ───────────────────────────
 
@@ -1221,16 +1219,9 @@ def render_history(history):
                                   'borderRadius': '4px', 'cursor': 'pointer'})
     entries = []
     for idx, entry in enumerate(reversed(history)):
-        label, _, latex_before, img_b64 = entry
+        label, _, latex_before, _ = entry
         step_num = len(history) - idx
-        if img_b64:
-            body = html.Img(
-                src=f'data:image/png;base64,{img_b64}',
-                style={'maxWidth': '100%', 'display': 'block'},
-            )
-        else:
-            body = html.Pre(latex_before, style={'fontSize': '11px', 'whiteSpace': 'pre-wrap',
-                                                  'wordBreak': 'break-all'})
+        body = dcc.Markdown(latex_before, mathjax=True, style={'fontSize': '12px'})
         entries.append(html.Details([
             html.Summary(f"Step {step_num}: {label}"),
             html.Div(body, className="entry-body"),
