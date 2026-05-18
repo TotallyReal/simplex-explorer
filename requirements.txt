@@ -1,0 +1,9 @@
+streamlit>=1.30
+numpy
+matplotlib
+Pillow
+pandas
+scipy
+dash>=2.9
+dash-bootstrap-components>=1.0
+plotly

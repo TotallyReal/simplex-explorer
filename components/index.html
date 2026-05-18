@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  background: transparent;
+  padding: 4px 4px 8px 4px;
+}
+
+table { border-collapse: collapse; }
+
+th, td {
+  padding: 6px 16px;
+  text-align: center;
+  border: 1px solid #d0d0d0;
+  white-space: nowrap;
+}
+
+/* ── Non-interactive grey zone ─────────────────────────────────── */
+.grey { background: #f2f2f2; color: #555; }
+
+/* Thick separators */
+.sep-r { border-right: 3px solid #888 !important; }
+.sep-b { border-bottom: 3px solid #888 !important; }
+
+/* ── Clickable headers ─────────────────────────────────────────── */
+.col-hdr, .row-hdr {
+  cursor: pointer;
+  user-select: none;
+  font-weight: bold;
+}
+.col-hdr:hover { background: #ffebee !important; }
+.row-hdr:hover { background: #ffebee !important; }
+
+/* ── Selected headers ──────────────────────────────────────────── */
+.col-hdr.sel { background: #c62828 !important; color: white !important; }
+.row-hdr.sel { background: #c62828 !important; color: white !important; }
+
+/* ── Highlighted cells ─────────────────────────────────────────── */
+.in-col { background: #ffcdd2 !important; }
+.in-row { background: #ffcdd2 !important; }
+
+/* Pivot cell (selected col × selected row) */
+.pivot { background: #fff176 !important; font-weight: bold; }
+
+/* ── Clickable B cells ─────────────────────────────────────────── */
+.b-cell { cursor: pointer; }
+.b-cell:hover { background: #fff8e1 !important; }
+
+/* ── Bounds row ────────────────────────────────────────────────── */
+.bounds-row td, .bounds-row th {
+  border-top: 1px dashed #bbb;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  color: #888;
+  font-style: italic;
+  padding-top: 5px;
+}
+/* Restore right separator on const cell */
+.bounds-row .sep-r { border-right: 3px solid #aaa !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+let _es = null;   // entering_s (selected nonbasic column index)
+let _lr = null;   // leaving_r  (selected basic row index)
+let _last = null; // last args from Python
+
+function cell(parent, tag, html, cls, onclick) {
+  const el = document.createElement(tag);
+  el.innerHTML = html;
+  if (cls) el.className = cls;
+  if (onclick) el.addEventListener('click', onclick);
+  parent.appendChild(el);
+}
+
+function buildTable(args) {
+  const { B_str, C_str, A_str, basic_vars, nonbasic_vars, col_bounds } = args;
+  const m = basic_vars.length, n = nonbasic_vars.length;
+
+  const tbl = document.createElement('table');
+
+  // ── Header row ────────────────────────────────────────────────────
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+
+  cell(hr, 'th', '', 'grey sep-r sep-b');
+  cell(hr, 'th', 'const', 'grey sep-r sep-b');
+  for (let s = 0; s < n; s++) {
+    const cls = 'col-hdr sep-b' + (_es === s ? ' sel' : '');
+    const v = nonbasic_vars[s];
+    cell(hr, 'th', `x<sub>${v}</sub>`, cls, () => clickCol(s));
+  }
+  thead.appendChild(hr);
+  tbl.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+
+  // ── Max row ───────────────────────────────────────────────────────
+  const mr = document.createElement('tr');
+  cell(mr, 'th', 'max', 'grey sep-r sep-b');
+  cell(mr, 'td', A_str[0], 'grey sep-r sep-b');
+  for (let s = 0; s < n; s++) {
+    cell(mr, 'td', A_str[s + 1], 'grey sep-b' + (_es === s ? ' in-col' : ''));
+  }
+  tbody.appendChild(mr);
+
+  // ── Constraint rows ───────────────────────────────────────────────
+  for (let i = 0; i < m; i++) {
+    const tr = document.createElement('tr');
+    const bv = basic_vars[i];
+
+    cell(tr, 'th', `x<sub>${bv}</sub>`,
+      'row-hdr grey sep-r' + (_lr === i ? ' sel' : ''),
+      () => clickRow(i));
+
+    cell(tr, 'td', C_str[i],
+      'grey sep-r' + (_lr === i ? ' in-row' : ''));
+
+    for (let s = 0; s < n; s++) {
+      const inC = (_es === s), inR = (_lr === i);
+      const cls = 'b-cell' + (inC && inR ? ' pivot' : inC ? ' in-col' : inR ? ' in-row' : '');
+      cell(tr, 'td', B_str[i][s], cls, () => clickCell(i, s));
+    }
+    tbody.appendChild(tr);
+  }
+
+  // ── Bounds row ────────────────────────────────────────────────────
+  const br = document.createElement('tr');
+  br.className = 'bounds-row';
+  cell(br, 'th', '', 'grey');
+  cell(br, 'td', '', 'grey sep-r');
+  for (let s = 0; s < n; s++) cell(br, 'td', col_bounds[s], '');
+  tbody.appendChild(br);
+
+  tbl.appendChild(tbody);
+
+  const root = document.getElementById('root');
+  root.innerHTML = '';
+  root.appendChild(tbl);
+}
+
+function clickCol(s) {
+  _es = (_es === s) ? null : s;
+  sendValue();
+  buildTable(_last);
+}
+
+function clickRow(r) {
+  _lr = (_lr === r) ? null : r;
+  sendValue();
+  buildTable(_last);
+}
+
+function clickCell(r, s) {
+  _es = s;
+  _lr = r;
+  sendValue();
+  buildTable(_last);
+}
+
+function sendValue() {
+  window.parent.postMessage({
+    type: 'streamlit:setComponentValue',
+    value: { entering_s: _es, leaving_r: _lr },
+    dataType: 'json'
+  }, '*');
+}
+
+window.addEventListener('message', (e) => {
+  if (e.data.type === 'streamlit:render') {
+    _last = e.data.args;
+    _es = _last.entering_s ?? null;
+    _lr = _last.leaving_r ?? null;
+    buildTable(_last);
+  }
+});
+
+window.parent.postMessage({ type: 'streamlit:componentReady', apiVersion: 1 }, '*');
+</script>
+</body>
+</html>

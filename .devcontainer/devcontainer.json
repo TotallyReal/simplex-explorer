@@ -1,0 +1,16 @@
+{
+  "name": "simplex-algorithm",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    }
+  },
+  "forwardPorts": [8050, 8501],
+  "remoteUser": "node",
+  "postCreateCommand": "sudo apt-get update -qq && sudo apt-get install -y python3-pip texlive-latex-recommended ghostscript && pip3 install -r requirements.txt --break-system-packages"
+}
