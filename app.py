@@ -8,6 +8,7 @@ import dash_bootstrap_components as dbc
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from simplex import LinearProgram
+from geometry_2d import make_2d_figure
 import instructions
 
 """
@@ -485,6 +486,7 @@ main_area = html.Div([
         'A': ['0', '1', '1'],
     }),
     dcc.Store(id='original-lp'),
+    dcc.Store(id='constraints-2d'),
     dcc.Store(id='editor-2d-meta', data={'m': 3}),
     dcc.Store(id='editor-2d-values', data={
         'a': [['1', '-1'], ['1', '0'], ['-1', '2']],
@@ -831,6 +833,7 @@ def validate_A(value):
     Output('app-mode', 'data', allow_duplicate=True),
     Output('history-store', 'data', allow_duplicate=True),
     Output('selection-store', 'data', allow_duplicate=True),
+    Output('constraints-2d', 'data', allow_duplicate=True),
     Output('editor-msg', 'children'),
     Input('btn-generate', 'n_clicks'),
     State('editor-tab-store', 'data'),
@@ -848,7 +851,7 @@ def validate_A(value):
 )
 def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_vals, c_vals):
     if not n_clicks:
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     sel = {'entering_s': None, 'leaving_r': None}
 
@@ -862,9 +865,15 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
             C_lp = [parse_num(b[i]) for i in range(m)]
             lp = LinearProgram(B_lp, C_lp, A)
             lp_dict = lp_to_dict(lp)
-            return lp_dict, lp_dict, 'view', [], sel, html.Div()
+            # Store original inequalities for the geometry diagram (persists across pivots)
+            constraints = {
+                'A_ub': [[float(parse_num(a[i][j])) for j in range(2)] for i in range(m)],
+                'b_ub': [float(parse_num(b[i])) for i in range(m)],
+                'c_obj': [float(c1), float(c2)],
+            }
+            return lp_dict, lp_dict, 'view', [], sel, constraints, html.Div()
         except Exception as e:
-            return no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
+            return no_update, no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
 
     m, n, B_str, C_str, A_str = _read_editor_state(meta, B_vals, C_vals, A_vals)
 
@@ -882,7 +891,7 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
 
     if errors:
         msg = html.Div(f"Invalid values: {', '.join(errors)}", className="msg-error")
-        return no_update, no_update, no_update, no_update, no_update, msg
+        return no_update, no_update, no_update, no_update, no_update, no_update, msg
 
     try:
         B = [[parse_num(B_str[i][j]) for j in range(n)] for i in range(m)]
@@ -890,9 +899,9 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
         A = [parse_num(v) for v in A_str]
         lp = LinearProgram(B, C, A)
         lp_dict = lp_to_dict(lp)
-        return lp_dict, lp_dict, 'view', [], sel, html.Div()
+        return lp_dict, lp_dict, 'view', [], sel, None, html.Div()
     except Exception as e:
-        return no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
+        return no_update, no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
 
 # ── Callbacks: Edit original / Edit current ────────────────────────────────────
 
@@ -1179,8 +1188,9 @@ def undo(n_clicks, history):
     Input('lp-store', 'data'),
     Input('app-mode', 'data'),
     Input('font-size-store', 'data'),
+    Input('constraints-2d', 'data'),
 )
-def render_system(lp_data, app_mode, font_size):
+def render_system(lp_data, app_mode, font_size, constraints):
     if app_mode == 'edit' or not lp_data:
         return html.Div()
 
@@ -1215,7 +1225,7 @@ def render_system(lp_data, app_mode, font_size):
 
     _md_style = {'paddingTop': '10px', 'paddingLeft': '20px', 'fontSize': f'{font_size}pt'}
 
-    section = html.Div([
+    algebra_panel = html.Div([
         html.Div([
             html.H5("Current system", style={'display': 'inline', 'marginBottom': '0'}),
             feasibility_badge,
@@ -1233,10 +1243,32 @@ def render_system(lp_data, app_mode, font_size):
                                 'background': 'none', 'border': 'none'}),
             ]),
         ]),
-        html.Hr(),
     ])
 
-    return section
+    if constraints:
+        import numpy as np
+        pt = lp.current_point()
+        current_xy = (float(pt.get(1, 0)), float(pt.get(2, 0)))
+        obj_val = float(lp.A[0])
+        fig = make_2d_figure(
+            np.array(constraints['A_ub']),
+            np.array(constraints['b_ub']),
+            constraints['c_obj'],
+            obj_val,
+            current_pt=current_xy,
+        )
+        diagram_panel = html.Div([
+            html.H5("Geometry", style={'marginBottom': '8px'}),
+            dcc.Graph(figure=fig, config={'displayModeBar': False}),
+        ], style={'minWidth': '420px'})
+
+        return html.Div([
+            html.Div([algebra_panel, diagram_panel],
+                     style={'display': 'flex', 'gap': '32px', 'alignItems': 'flex-start'}),
+            html.Hr(),
+        ])
+
+    return html.Div([algebra_panel, html.Hr()])
 
 # ── Callback: Controls section (fast — no pdflatex) ───────────────────────────
 
