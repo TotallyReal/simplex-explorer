@@ -248,6 +248,72 @@ def build_editor_table(m: int, n: int, values: dict) -> html.Table:
         style={'borderCollapse': 'collapse', 'fontFamily': 'monospace', 'fontSize': '13px'},
     )
 
+# ── 2D inequality editor builder ─────────────────────────────────────────────
+
+def build_2d_editor_table(m: int, values: dict) -> html.Table:
+    a = values['a']   # m x 2 list of strings
+    b = values['b']   # m list of strings
+    c = values['c']   # [c1, c2] strings
+
+    header = html.Thead(html.Tr([
+        html.Th("", className="grey sep-r sep-b"),
+        html.Th(xsub(1), className="grey sep-b"),
+        html.Th(xsub(2), className="grey sep-b"),
+        html.Th("≤", className="grey sep-b"),
+        html.Th("b", className="grey sep-b"),
+    ]))
+
+    obj_row = html.Tr([
+        html.Th("max", className="grey sep-r sep-b"),
+        html.Td(
+            dcc.Input(id={'type': 'ed-2d-c', 'col': 0}, value=c[0],
+                      debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            className="sep-b",
+        ),
+        html.Td(
+            dcc.Input(id={'type': 'ed-2d-c', 'col': 1}, value=c[1],
+                      debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            className="sep-b",
+        ),
+        html.Td("", className="grey sep-b"),
+        html.Td("", className="grey sep-b"),
+    ])
+
+    con_rows = []
+    for i in range(m):
+        con_rows.append(html.Tr([
+            html.Th(xsub(3 + i), className="grey sep-r"),
+            html.Td(
+                dcc.Input(id={'type': 'ed-2d-a', 'row': i, 'col': 0}, value=a[i][0],
+                          debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            ),
+            html.Td(
+                dcc.Input(id={'type': 'ed-2d-a', 'row': i, 'col': 1}, value=a[i][1],
+                          debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            ),
+            html.Td("≤", className="grey", style={'textAlign': 'center'}),
+            html.Td(
+                dcc.Input(id={'type': 'ed-2d-b', 'row': i}, value=b[i],
+                          debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            ),
+        ]))
+
+    footer_row = html.Tr(html.Td(
+        [
+            html.Button("+", id='btn-2d-add-row', n_clicks=0, style=_BTN_SMALL, title="Add constraint"),
+            html.Button("−", id='btn-2d-rem-row', n_clicks=0,
+                        style={**_BTN_SMALL, 'marginLeft': '4px'}, title="Remove constraint"),
+        ],
+        colSpan=5,
+        style={'paddingTop': '6px', 'borderTop': '1px solid #d0d0d0'},
+    ))
+
+    return html.Table(
+        [header, html.Tbody([obj_row, *con_rows, footer_row])],
+        id='editor-2d-table',
+        style={'borderCollapse': 'collapse', 'fontFamily': 'monospace', 'fontSize': '13px'},
+    )
+
 # ── Pivot table builder ───────────────────────────────────────────────────────
 
 def build_pivot_table(lp: LinearProgram, entering_s, leaving_r) -> html.Table:
@@ -419,6 +485,13 @@ main_area = html.Div([
         'A': ['0', '1', '1'],
     }),
     dcc.Store(id='original-lp'),
+    dcc.Store(id='editor-2d-meta', data={'m': 3}),
+    dcc.Store(id='editor-2d-values', data={
+        'a': [['1', '-1'], ['1', '0'], ['-1', '2']],
+        'b': ['3', '4', '5'],
+        'c': ['1', '1'],
+    }),
+    dcc.Store(id='editor-tab-store', data='table'),
     dcc.Store(id='font-size-store', data=12),
     dcc.Store(id='panel-mult-store', data=4),
     dcc.Store(id='panel-pad-store', data=20),
@@ -490,8 +563,11 @@ def render_page(pathname):
     Input('app-mode', 'data'),
     Input('editor-meta', 'data'),
     Input('editor-values', 'data'),
+    Input('editor-2d-meta', 'data'),
+    Input('editor-2d-values', 'data'),
+    State('editor-tab-store', 'data'),
 )
-def render_editor(app_mode, meta, values):
+def render_editor(app_mode, meta, values, meta_2d, values_2d, active_tab):
     if app_mode == 'view':
         return html.Div()
     m, n = meta['m'], meta['n']
@@ -532,9 +608,20 @@ def render_editor(app_mode, meta, values):
         ]),
     )
 
+    d2_tab = dcc.Tab(label='2D (inequalities)', value='2d', style=_etab, selected_style=_etab_sel,
+        children=html.Div([
+            html.P([
+                "Enter constraints as ", html.B("a₁·x₁ + a₂·x₂ ≤ b"),
+                " and an objective ", html.B("max c₁·x₁ + c₂·x₂"),
+                ". The app converts to slack form automatically.",
+            ], style={'fontSize': '12px', 'color': '#666', 'margin': '10px 0 10px'}),
+            build_2d_editor_table(meta_2d['m'], values_2d),
+        ]),
+    )
+
     return html.Div([
         html.H5("Define system", style={'marginBottom': '8px'}),
-        dcc.Tabs(id='editor-tabs', value='table', children=[table_tab, text_tab]),
+        dcc.Tabs(id='editor-tabs', value=active_tab or 'table', children=[table_tab, text_tab, d2_tab]),
         html.Button(
             "Generate →",
             id='btn-generate',
@@ -623,6 +710,59 @@ def rem_row(n_clicks, meta, B_vals, C_vals, A_vals):
         return no_update, no_update
     return {'m': m - 1, 'n': n}, {'B': B[:-1], 'C': C[:-1], 'A': A}
 
+# ── Callbacks: 2D editor resize ──────────────────────────────────────────────
+
+def _read_2d_state(meta_2d, a_vals, b_vals, c_vals):
+    m = meta_2d['m']
+    a = [[a_vals[i * 2 + j] or '0' for j in range(2)] for i in range(m)]
+    b = [v or '0' for v in b_vals]
+    c = [v or '0' for v in c_vals]
+    return m, a, b, c
+
+@app.callback(
+    Output('editor-2d-meta', 'data', allow_duplicate=True),
+    Output('editor-2d-values', 'data', allow_duplicate=True),
+    Input('btn-2d-add-row', 'n_clicks'),
+    State('editor-2d-meta', 'data'),
+    State({'type': 'ed-2d-a', 'row': ALL, 'col': ALL}, 'value'),
+    State({'type': 'ed-2d-b', 'row': ALL}, 'value'),
+    State({'type': 'ed-2d-c', 'col': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def add_row_2d(n, meta_2d, a_vals, b_vals, c_vals):
+    if not n:
+        return no_update, no_update
+    m, a, b, c = _read_2d_state(meta_2d, a_vals, b_vals, c_vals)
+    return {'m': m + 1}, {'a': a + [['0', '0']], 'b': b + ['0'], 'c': c}
+
+@app.callback(
+    Output('editor-2d-meta', 'data', allow_duplicate=True),
+    Output('editor-2d-values', 'data', allow_duplicate=True),
+    Input('btn-2d-rem-row', 'n_clicks'),
+    State('editor-2d-meta', 'data'),
+    State({'type': 'ed-2d-a', 'row': ALL, 'col': ALL}, 'value'),
+    State({'type': 'ed-2d-b', 'row': ALL}, 'value'),
+    State({'type': 'ed-2d-c', 'col': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def rem_row_2d(n, meta_2d, a_vals, b_vals, c_vals):
+    if not n:
+        return no_update, no_update
+    m, a, b, c = _read_2d_state(meta_2d, a_vals, b_vals, c_vals)
+    if m <= 1:
+        return no_update, no_update
+    return {'m': m - 1}, {'a': a[:-1], 'b': b[:-1], 'c': c}
+
+# ── Callback: persist active editor tab ───────────────────────────────────────
+
+@app.callback(
+    Output('editor-tab-store', 'data'),
+    Input('editor-tabs', 'value'),
+    prevent_initial_call=True,
+)
+def sync_editor_tab(tab):
+    return tab
+
 # ── Callbacks: text tab sync / apply ─────────────────────────────────────────
 
 @app.callback(
@@ -693,15 +833,39 @@ def validate_A(value):
     Output('selection-store', 'data', allow_duplicate=True),
     Output('editor-msg', 'children'),
     Input('btn-generate', 'n_clicks'),
+    State('editor-tab-store', 'data'),
+    # Table/text tab inputs
     State('editor-meta', 'data'),
     State({'type': 'ed-B', 'row': ALL, 'col': ALL}, 'value'),
     State({'type': 'ed-C', 'row': ALL}, 'value'),
     State({'type': 'ed-A', 'col': ALL}, 'value'),
+    # 2D tab inputs
+    State('editor-2d-meta', 'data'),
+    State({'type': 'ed-2d-a', 'row': ALL, 'col': ALL}, 'value'),
+    State({'type': 'ed-2d-b', 'row': ALL}, 'value'),
+    State({'type': 'ed-2d-c', 'col': ALL}, 'value'),
     prevent_initial_call=True,
 )
-def generate_lp(n_clicks, meta, B_vals, C_vals, A_vals):
+def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_vals, c_vals):
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update, no_update
+
+    sel = {'entering_s': None, 'leaving_r': None}
+
+    if tab == '2d':
+        try:
+            m, a, b, c = _read_2d_state(meta_2d, a_vals, b_vals, c_vals)
+            c1 = parse_num(c[0])
+            c2 = parse_num(c[1])
+            A = [Fraction(0), c1, c2]
+            B_lp = [[-parse_num(a[i][0]), -parse_num(a[i][1])] for i in range(m)]
+            C_lp = [parse_num(b[i]) for i in range(m)]
+            lp = LinearProgram(B_lp, C_lp, A)
+            lp_dict = lp_to_dict(lp)
+            return lp_dict, lp_dict, 'view', [], sel, html.Div()
+        except Exception as e:
+            return no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
+
     m, n, B_str, C_str, A_str = _read_editor_state(meta, B_vals, C_vals, A_vals)
 
     errors = []
@@ -726,7 +890,6 @@ def generate_lp(n_clicks, meta, B_vals, C_vals, A_vals):
         A = [parse_num(v) for v in A_str]
         lp = LinearProgram(B, C, A)
         lp_dict = lp_to_dict(lp)
-        sel = {'entering_s': None, 'leaving_r': None}
         return lp_dict, lp_dict, 'view', [], sel, html.Div()
     except Exception as e:
         return no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
