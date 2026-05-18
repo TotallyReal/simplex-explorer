@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .venv/
 .DS_Store
+temp/
 *.png
 !assets/pivot_example.png
 !media/pivot_example.png
