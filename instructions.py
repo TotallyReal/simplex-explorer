@@ -2,124 +2,23 @@ import numpy as np
 import plotly.graph_objects as go
 from dash import html, dcc, Input, Output, State
 import dash_bootstrap_components as dbc
-from scipy.spatial import ConvexHull
+from geometry_2d import make_2d_figure
 
 
 # ── Feasible region geometry ──────────────────────────────────────────────────
 # LP: max x+y  s.t.  x-y<=3,  x<=4,  -x+2y<=5,  x>=0,  y>=0
 
-def _feasible_vertices():
-    """Return vertices of the feasible region in CCW order."""
-    # Constraints as (a, b, c) meaning a*x + b*y <= c
-    constraints = [
-        (1, -1, 3),   # x - y <= 3
-        (1,  0, 4),   # x <= 4
-        (-1, 2, 5),   # -x + 2y <= 5
-        (-1, 0, 0),   # x >= 0  →  -x <= 0
-        (0, -1, 0),   # y >= 0  →  -y <= 0
-    ]
-
-    def intersect(c1, c2):
-        a1, b1, r1 = c1
-        a2, b2, r2 = c2
-        det = a1 * b2 - a2 * b1
-        if abs(det) < 1e-10:
-            return None
-        x = (r1 * b2 - r2 * b1) / det
-        y = (a1 * r2 - a2 * r1) / det
-        return x, y
-
-    def feasible(pt):
-        x, y = pt
-        for a, b, c in constraints:
-            if a * x + b * y > c + 1e-9:
-                return False
-        return True
-
-    pts = []
-    n = len(constraints)
-    for i in range(n):
-        for j in range(i + 1, n):
-            pt = intersect(constraints[i], constraints[j])
-            if pt and feasible(pt):
-                pts.append(pt)
-
-    pts = list({(round(x, 8), round(y, 8)) for x, y in pts})
-    arr = np.array(pts)
-    hull = ConvexHull(arr)
-    return arr[hull.vertices]
-
-
-_VERTICES = _feasible_vertices()
-_OPT = (4.0, 4.5)   # known optimum: x+y=8.5
+_A_UB = np.array([[1.0, -1.0], [1.0, 0.0], [-1.0, 2.0]])
+_B_UB = np.array([3.0, 4.0, 5.0])
+_C_OBJ = [1.0, 1.0]
+_OPT_SUM = 8.5  # known optimum: x+y=8.5
 
 
 def _make_diagram(d: float) -> go.Figure:
-    vx = np.append(_VERTICES[:, 0], _VERTICES[0, 0])
-    vy = np.append(_VERTICES[:, 1], _VERTICES[0, 1])
-
-    # Objective line x+y=d, endpoints slightly outside the axis range so
-    # Plotly clips it at the axis boundary rather than ending inside the plot.
-    line_pts = [(d - 7, 7), (7, d - 7)]
-
-    def _vertex_style(v, d):
-        s = v[0] + v[1]
-        if abs(s - (_OPT[0] + _OPT[1])) < 1e-6:
-            return ('gold', 16, 'darkorange') if abs(d - s) < 0.15 else ('royalblue', 9, 'royalblue')
-        return ('tomato', 14, 'firebrick') if abs(d - s) < 0.15 else ('royalblue', 9, 'royalblue')
-
-    v_colors, v_sizes, v_lines = zip(*[_vertex_style(v, d) for v in _VERTICES])
-
-    fig = go.Figure()
-
-    # Feasible region fill
-    fig.add_trace(go.Scatter(
-        x=list(vx), y=list(vy),
-        fill='toself',
-        fillcolor='rgba(100,181,246,0.35)',
-        line=dict(color='royalblue', width=2),
-        name='Feasible region',
-        hoverinfo='skip',
-    ))
-
-    # Objective line
-    lx, ly = zip(*line_pts)
-    fig.add_trace(go.Scatter(
-        x=list(lx), y=list(ly),
-        mode='lines',
-        line=dict(color='crimson', width=2.5, dash='dash'),
-        name=f'x + y = {d:.2f}',
-    ))
-
-    # All vertices in one trace with per-vertex colours
-    fig.add_trace(go.Scatter(
-        x=[v[0] for v in _VERTICES],
-        y=[v[1] for v in _VERTICES],
-        mode='markers',
-        marker=dict(size=list(v_sizes), color=list(v_colors),
-                    line=dict(color=list(v_lines), width=2)),
-        name='Vertices',
-        hovertemplate='(%{x}, %{y})<extra></extra>',
-    ))
-
-    at_optimum = abs(d - (_OPT[0] + _OPT[1])) < 0.15
-    annotations = [dict(
-        x=_OPT[0], y=_OPT[1], text='<b>Optimal!</b>',
-        showarrow=True, arrowhead=2, ax=40, ay=-40,
-        font=dict(color='darkorange', size=13),
-        bgcolor='rgba(255,255,255,0.8)', bordercolor='darkorange', borderwidth=1,
-    )] if at_optimum else []
-
-    fig.update_layout(
-        xaxis=dict(range=[-0.3, 6], title='x', zeroline=True, zerolinewidth=1, zerolinecolor='#aaa'),
-        yaxis=dict(range=[-0.3, 6], title='y', zeroline=True, zerolinewidth=1, zerolinecolor='#aaa', scaleanchor='x'),
-        margin=dict(l=40, r=20, t=30, b=40),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-        height=420,
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        annotations=annotations,
-    )
+    fig = make_2d_figure(_A_UB, _B_UB, _C_OBJ, d)
+    # Label trace 1 with the familiar "x + y = d" format used by the clientside callback
+    if fig.data and len(fig.data) > 1:
+        fig.data[1].name = f'x + y = {d:.2f}'
     return fig
 
 
