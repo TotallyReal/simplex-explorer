@@ -1,7 +1,5 @@
 import os
 import sys
-import base64
-import io
 from fractions import Fraction
 
 import dash
@@ -10,7 +8,6 @@ import dash_bootstrap_components as dbc
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from simplex import LinearProgram
-from latex_rendering import LatexRenderer
 import instructions
 
 """
@@ -37,27 +34,7 @@ inifinite
 
 """
 
-_renderer = LatexRenderer(font_size=12)
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _render_b64(latex_str: str) -> str:
-    img = _renderer.generate_image(latex_str)
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    return base64.b64encode(buf.getvalue()).decode()
-
-def _b64_to_img_div(b64: str, panel_height: int) -> html.Div:
-    return html.Div(
-        html.Img(
-            src=f'data:image/png;base64,{b64}',
-            style={'maxHeight': '100%', 'maxWidth': '100%', 'display': 'block'},
-        ),
-        style={'height': f'{panel_height}px', 'overflow': 'hidden', 'paddingTop': '10px', 'paddingLeft': '20px'},
-    )
-
-def latex_to_img_tag(latex_str: str, panel_height: int) -> html.Div:
-    return _b64_to_img_div(_render_b64(latex_str), panel_height)
 
 def lp_to_dict(lp: LinearProgram) -> dict:
     return {
@@ -443,7 +420,6 @@ main_area = html.Div([
     }),
     dcc.Store(id='original-lp'),
     dcc.Store(id='font-size-store', data=12),
-    dcc.Store(id='current-img-store'),
     dcc.Store(id='panel-mult-store', data=4),
     dcc.Store(id='panel-pad-store', data=20),
     dcc.Store(id='left-collapsed', data=False),
@@ -794,7 +770,6 @@ def edit_current(n_clicks, lp_data):
     Input('font-size-slider', 'value'),
 )
 def update_font_size(value):
-    _renderer.font_size = value
     return value
 
 @app.callback(
@@ -933,10 +908,9 @@ app.clientside_callback(
     State('lp-store', 'data'),
     State('selection-store', 'data'),
     State('history-store', 'data'),
-    State('current-img-store', 'data'),
     prevent_initial_call=True,
 )
-def perform_pivot(n_clicks, lp_data, sel, history, img_b64):
+def perform_pivot(n_clicks, lp_data, sel, history):
     if not n_clicks or not lp_data:
         return no_update, no_update, no_update
     entering_s = sel.get('entering_s')
@@ -947,7 +921,7 @@ def perform_pivot(n_clicks, lp_data, sel, history, img_b64):
     entering_v = lp.nonbasic_vars[entering_s]
     leaving_v  = lp.basic_vars[leaving_r]
     snap = lp_to_dict(lp)
-    history = list(history) + [(f"Enter x{entering_v}, leave x{leaving_v}", snap, lp._to_latex_array_mathjax(), img_b64)]
+    history = list(history) + [(f"Enter x{entering_v}, leave x{leaving_v}", snap, lp._to_latex_array_mathjax())]
     lp.swap_variables(leaving_v, entering_v)
     return lp_to_dict(lp), {'entering_s': None, 'leaving_r': None}, history
 
@@ -961,10 +935,9 @@ def perform_pivot(n_clicks, lp_data, sel, history, img_b64):
     State('basis-input', 'value'),
     State('lp-store', 'data'),
     State('history-store', 'data'),
-    State('current-img-store', 'data'),
     prevent_initial_call=True,
 )
-def apply_basis(n_clicks, basis_text, lp_data, history, img_b64):
+def apply_basis(n_clicks, basis_text, lp_data, history):
     if not n_clicks or not lp_data:
         return no_update, no_update, no_update
     try:
@@ -974,7 +947,7 @@ def apply_basis(n_clicks, basis_text, lp_data, history, img_b64):
         latex = lp._to_latex_array_mathjax()
         lp.set_basis(indices)
         label = f"Set basis → {{{', '.join(f'x{i}' for i in indices)}}}"
-        history = list(history) + [(label, snap, latex, img_b64)]
+        history = list(history) + [(label, snap, latex)]
         return lp_to_dict(lp), history, html.Div("Basis applied.", className="msg-success")
     except Exception as e:
         return no_update, no_update, html.Div(str(e), className="msg-error")
@@ -990,10 +963,9 @@ def apply_basis(n_clicks, basis_text, lp_data, history, img_b64):
     State('lp-store', 'data'),
     State('history-store', 'data'),
     State('rule-radio', 'value'),
-    State('current-img-store', 'data'),
     prevent_initial_call=True,
 )
-def auto_pivot(n_step, n_solve, lp_data, history, rule, img_b64):
+def auto_pivot(n_step, n_solve, lp_data, history, rule):
     if not (n_step or n_solve) or not lp_data:
         return no_update, no_update, no_update
     lp = dict_to_lp(lp_data)
@@ -1004,7 +976,7 @@ def auto_pivot(n_step, n_solve, lp_data, history, rule, img_b64):
             if p is None:
                 return no_update, no_update, html.Div("Already optimal.", className="msg-info")
             ev, lv = p
-            history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp._to_latex_array_mathjax(), img_b64))
+            history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp._to_latex_array_mathjax()))
             lp.swap_variables(lv, ev)
         else:
             steps = 0
@@ -1013,8 +985,7 @@ def auto_pivot(n_step, n_solve, lp_data, history, rule, img_b64):
                 if p is None:
                     break
                 ev, lv = p
-                # For multi-step solve, intermediate images are not available
-                history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp._to_latex_array_mathjax(), None))
+                history.append((f"[{rule}] Enter x{ev}, leave x{lv}", lp_to_dict(lp), lp._to_latex_array_mathjax()))
                 lp.swap_variables(lv, ev)
                 steps += 1
             return lp_to_dict(lp), history, html.Div(f"Solved in {steps} step(s).", className="msg-success")
@@ -1035,21 +1006,20 @@ def undo(n_clicks, history):
     if not n_clicks or not history:
         return no_update, no_update
     history = list(history)
-    _, snap, _, _ = history.pop()
+    _, snap, _ = history.pop()
     return snap, history
 
 # ── Callback: System section (MathJax rendering) ──────────────────────────────
 
 @app.callback(
     Output('system-section', 'children'),
-    Output('current-img-store', 'data'),
     Input('lp-store', 'data'),
     Input('app-mode', 'data'),
     Input('font-size-store', 'data'),
 )
 def render_system(lp_data, app_mode, font_size):
     if app_mode == 'edit' or not lp_data:
-        return html.Div(), no_update
+        return html.Div()
 
     lp = dict_to_lp(lp_data)
     is_feasible = all(c >= 0 for c in lp.C)
@@ -1103,7 +1073,7 @@ def render_system(lp_data, app_mode, font_size):
         html.Hr(),
     ])
 
-    return section, no_update
+    return section
 
 # ── Callback: Controls section (fast — no pdflatex) ───────────────────────────
 
@@ -1225,7 +1195,7 @@ def render_history(history):
                                   'borderRadius': '4px', 'cursor': 'pointer'})
     entries = []
     for idx, entry in enumerate(reversed(history)):
-        label, _, latex_before, _ = entry
+        label, _, latex_before = entry
         step_num = len(history) - idx
         body = dcc.Markdown(latex_before, mathjax=True, style={'fontSize': '12px'})
         entries.append(html.Details([
