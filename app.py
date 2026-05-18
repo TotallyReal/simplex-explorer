@@ -877,45 +877,51 @@ def update_right_sidebar(collapsed):
 def update_sidebar_btns(original_lp, lp_data):
     return original_lp is None, lp_data is None
 
-# ── Callbacks: pivot table interaction ────────────────────────────────────────
+# ── Callbacks: pivot table interaction (clientside — no server round-trip) ─────
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(n_clicks_list, sel) {
+        const t = dash_clientside.callback_context.triggered;
+        if (!t || !t.length || !t[0].value) return dash_clientside.no_update;
+        const s = JSON.parse(t[0].prop_id.split('.')[0]).index;
+        return {...sel, entering_s: sel.entering_s === s ? null : s};
+    }
+    """,
     Output('selection-store', 'data', allow_duplicate=True),
     Input({'type': 'col-hdr', 'index': ALL}, 'n_clicks'),
     State('selection-store', 'data'),
     prevent_initial_call=True,
 )
-def click_col(n_clicks_list, sel):
-    if not ctx.triggered_id or not any(n_clicks_list):
-        return no_update
-    s = ctx.triggered_id['index']
-    new_sel = dict(sel)
-    new_sel['entering_s'] = None if sel.get('entering_s') == s else s
-    return new_sel
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(n_clicks_list, sel) {
+        const t = dash_clientside.callback_context.triggered;
+        if (!t || !t.length || !t[0].value) return dash_clientside.no_update;
+        const i = JSON.parse(t[0].prop_id.split('.')[0]).index;
+        return {...sel, leaving_r: sel.leaving_r === i ? null : i};
+    }
+    """,
     Output('selection-store', 'data', allow_duplicate=True),
     Input({'type': 'row-hdr', 'index': ALL}, 'n_clicks'),
     State('selection-store', 'data'),
     prevent_initial_call=True,
 )
-def click_row(n_clicks_list, sel):
-    if not ctx.triggered_id or not any(n_clicks_list):
-        return no_update
-    i = ctx.triggered_id['index']
-    new_sel = dict(sel)
-    new_sel['leaving_r'] = None if sel.get('leaving_r') == i else i
-    return new_sel
 
-@app.callback(
+app.clientside_callback(
+    """
+    function(n_clicks_list) {
+        const t = dash_clientside.callback_context.triggered;
+        if (!t || !t.length || !t[0].value) return dash_clientside.no_update;
+        const id = JSON.parse(t[0].prop_id.split('.')[0]);
+        return {entering_s: id.col, leaving_r: id.row};
+    }
+    """,
     Output('selection-store', 'data', allow_duplicate=True),
     Input({'type': 'b-cell', 'row': ALL, 'col': ALL}, 'n_clicks'),
     prevent_initial_call=True,
 )
-def click_cell(n_clicks_list):
-    if not ctx.triggered_id or not any(n_clicks_list):
-        return no_update
-    return {'entering_s': ctx.triggered_id['col'], 'leaving_r': ctx.triggered_id['row']}
 
 # ── Callback: Perform pivot ───────────────────────────────────────────────────
 
