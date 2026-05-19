@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from fractions import Fraction
 
@@ -44,6 +45,7 @@ def lp_to_dict(lp: LinearProgram) -> dict:
         'A': [str(v) for v in lp.A],
         'basic_vars': lp.basic_vars[:],
         'nonbasic_vars': lp.nonbasic_vars[:],
+        'var_names': lp.var_names[:],
     }
 
 def dict_to_lp(d: dict) -> LinearProgram:
@@ -53,6 +55,8 @@ def dict_to_lp(d: dict) -> LinearProgram:
     lp = LinearProgram(B, C, A)
     lp.basic_vars = d['basic_vars']
     lp.nonbasic_vars = d['nonbasic_vars']
+    if 'var_names' in d:
+        lp.var_names = d['var_names']
     return lp
 
 def frac_str(f: Fraction) -> str:
@@ -70,6 +74,13 @@ def xsub(v: int):
 
 def ysub(v: int):
     return html.Span(["y", html.Sub(str(v))])
+
+def var_html(name: str):
+    """Convert a stored variable name (e.g. 'x_{1}', 's_{2}', 'x') to an HTML span."""
+    m = re.match(r'^([^_]+)_\{(\w+)\}$', name)
+    if m:
+        return html.Span([m.group(1), html.Sub(m.group(2))])
+    return html.Span(name)
 
 def build_phase1_lp(lp: LinearProgram) -> LinearProgram:
     """
@@ -118,7 +129,8 @@ def build_phase1_lp(lp: LinearProgram) -> LinearProgram:
     phase1.nonbasic_vars = list(lp.nonbasic_vars) + [lp.basic_vars[i] for i in infeasible]
     phase1.basic_vars = list(lp.basic_vars)
     for k, i in enumerate(infeasible):
-        phase1.basic_vars[i] = n + m + k + 1   # artificial z_k
+        phase1.basic_vars[i] = n + m + k + 1   # artificial w_k
+    phase1.var_names = lp.var_names + [f'w_{{{k+1}}}' for k in range(p)]
 
     return phase1
 
@@ -310,8 +322,8 @@ def build_2d_editor_table(m: int, values: dict) -> html.Table:
 
     header = html.Thead(html.Tr([
         html.Th("", className="grey sep-r sep-b"),
-        html.Th(xsub(1), className="grey sep-b"),
-        html.Th(xsub(2), className="grey sep-b"),
+        html.Th(html.Span("x"), className="grey sep-b"),
+        html.Th(html.Span("y"), className="grey sep-b"),
         html.Th("≤", className="grey sep-b"),
         html.Th("b", className="grey sep-b"),
     ]))
@@ -335,7 +347,7 @@ def build_2d_editor_table(m: int, values: dict) -> html.Table:
     con_rows = []
     for i in range(m):
         con_rows.append(html.Tr([
-            html.Th(xsub(3 + i), className="grey sep-r"),
+            html.Th(html.Span(["s", html.Sub(str(i + 1))]), className="grey sep-r"),
             html.Td(
                 dcc.Input(id={'type': 'ed-2d-a', 'row': i, 'col': 0}, value=a[i][0],
                           debounce=True, type='text', style=_CELL_INPUT_STYLE),
@@ -408,7 +420,7 @@ def build_pivot_table(lp: LinearProgram, entering_s, leaving_r) -> html.Table:
         html.Th("", className="grey sep-r sep-b"),
         html.Th("const", className="grey sep-r sep-b"),
         *[
-            html.Th(xsub(lp.nonbasic_vars[s]), className=col_cls(s),
+            html.Th(var_html(lp._var_name(lp.nonbasic_vars[s])), className=col_cls(s),
                     id={'type': 'col-hdr', 'index': s}, n_clicks=0)
             for s in range(n)
         ],
@@ -430,7 +442,7 @@ def build_pivot_table(lp: LinearProgram, entering_s, leaving_r) -> html.Table:
     for i in range(m):
         bv = lp.basic_vars[i]
         con_rows.append(html.Tr([
-            html.Th(xsub(bv), className=row_cls(i),
+            html.Th(var_html(lp._var_name(bv)), className=row_cls(i),
                     id={'type': 'row-hdr', 'index': i}, n_clicks=0),
             html.Td(frac_str(lp.C[i]),
                     className="grey sep-r" + (" in-row" if i == leaving_r else "")),
@@ -918,7 +930,8 @@ def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_
             A = [Fraction(0), c1, c2]
             B_lp = [[-parse_num(a[i][0]), -parse_num(a[i][1])] for i in range(m)]
             C_lp = [parse_num(b[i]) for i in range(m)]
-            lp = LinearProgram(B_lp, C_lp, A)
+            var_names_2d = ['x', 'y'] + [f's_{{{i+1}}}' for i in range(m)]
+            lp = LinearProgram(B_lp, C_lp, A, var_names=var_names_2d)
             lp_dict = lp_to_dict(lp)
             constraints = {
                 'A_ub': [[float(parse_num(a[i][j])) for j in range(2)] for i in range(m)],
@@ -1377,8 +1390,8 @@ def render_controls(lp_data, sel, app_mode, phase):
                     className="msg-error",
                 )
         else:
-            sol = {f"x_{v}": frac_str(lp.C[i]) for i, v in enumerate(lp.basic_vars)}
-            sol.update({f"x_{v}": "0" for v in lp.nonbasic_vars})
+            sol = {lp._var_name(v): frac_str(lp.C[i]) for i, v in enumerate(lp.basic_vars)}
+            sol.update({lp._var_name(v): "0" for v in lp.nonbasic_vars})
             sol_str = ", ".join(f"{k} = {v}" for k, v in sorted(sol.items()))
             status = html.Div([html.B("Optimal! "), f"Objective = {frac_str(lp.A[0])}.  ", sol_str],
                               className="msg-success")
@@ -1403,7 +1416,8 @@ def render_controls(lp_data, sel, app_mode, phase):
                                     disabled=True, style={'opacity': '0.5', 'cursor': 'not-allowed',
                                                           'padding': '8px 20px', 'borderRadius': '4px'})
         else:
-            pivot_msg = html.Div(["Enter ", html.B(xsub(entering_v)), ", leave ", html.B(xsub(leaving_v)),
+            pivot_msg = html.Div(["Enter ", html.B(var_html(lp._var_name(entering_v))), ", leave ",
+                                   html.B(var_html(lp._var_name(leaving_v))),
                                    f"  (pivot = {frac_str(pivot_val)})"], className="msg-success")
             pivot_btn = html.Button("Perform pivot ↔", id='btn-pivot', n_clicks=0,
                                     style={'background': '#1976d2', 'color': 'white', 'border': 'none',
@@ -1413,7 +1427,7 @@ def render_controls(lp_data, sel, app_mode, phase):
     basis_section = html.Div([
         html.Hr(),
         html.H6("Set basis"),
-        html.P([f"Current basis: {{", ", ".join([f"x{v}" for v in sorted(lp.basic_vars)]),
+        html.P([f"Current basis: {{", ", ".join([lp._var_name(v) for v in sorted(lp.basic_vars)]),
                 f"}}. Enter {lp.m} indices:"],
                style={'fontSize': '13px', 'marginBottom': '8px'}),
         dcc.Input(id='basis-input', value=", ".join(str(v) for v in lp.basic_vars),
