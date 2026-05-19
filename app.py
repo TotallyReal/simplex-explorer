@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from fractions import Fraction
 
@@ -8,6 +9,7 @@ import dash_bootstrap_components as dbc
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from simplex import LinearProgram
+from geometry_2d import make_2d_figure
 import instructions
 
 """
@@ -43,6 +45,7 @@ def lp_to_dict(lp: LinearProgram) -> dict:
         'A': [str(v) for v in lp.A],
         'basic_vars': lp.basic_vars[:],
         'nonbasic_vars': lp.nonbasic_vars[:],
+        'var_names': lp.var_names[:],
     }
 
 def dict_to_lp(d: dict) -> LinearProgram:
@@ -52,6 +55,8 @@ def dict_to_lp(d: dict) -> LinearProgram:
     lp = LinearProgram(B, C, A)
     lp.basic_vars = d['basic_vars']
     lp.nonbasic_vars = d['nonbasic_vars']
+    if 'var_names' in d:
+        lp.var_names = d['var_names']
     return lp
 
 def frac_str(f: Fraction) -> str:
@@ -69,6 +74,66 @@ def xsub(v: int):
 
 def ysub(v: int):
     return html.Span(["y", html.Sub(str(v))])
+
+def var_html(name: str):
+    """Convert a stored variable name (e.g. 'x_{1}', 's_{2}', 'x') to an HTML span."""
+    m = re.match(r'^([^_]+)_\{(\w+)\}$', name)
+    if m:
+        return html.Span([m.group(1), html.Sub(m.group(2))])
+    return html.Span(name)
+
+def build_phase1_lp(lp: LinearProgram) -> LinearProgram:
+    """
+    Construct the Phase I LP for finding a feasible basis.
+
+    For each infeasible row i (C[i] < 0):
+      - Flip that row's signs so C1[i] = -C[i] > 0.
+      - Introduce artificial variable z_k as the new basic variable.
+      - The original basic variable at row i becomes nonbasic.
+
+    Phase I objective: max -∑z_k  (≡ 0 at optimum iff original LP is feasible).
+
+    Artificial variables are assigned global indices n+m+1, n+m+2, …
+    """
+    infeasible = [i for i in range(lp.m) if lp.C[i] < 0]
+    p = len(infeasible)
+    if p == 0:
+        return lp
+
+    n, m = lp.n, lp.m
+    n1 = n + p  # Phase I nonbasic count
+
+    B1 = [[Fraction(0)] * n1 for _ in range(m)]
+    C1 = list(lp.C)
+
+    for i in range(m):
+        for j in range(n):
+            B1[i][j] = lp.B[i][j]
+
+    for k, i in enumerate(infeasible):
+        for j in range(n):
+            B1[i][j] = -lp.B[i][j]
+        C1[i] = -lp.C[i]
+        B1[i][n + k] = Fraction(1)   # coefficient of the displaced basic var (now nonbasic)
+
+    # Phase I objective: -∑z_k.  Substitute z_k = -C[i_k] - B[i_k]*x + y_{i_k}:
+    #   -∑z_k = ∑C[i_k]  +  ∑_j (∑_k B[i_k][j]) * x_j  -  ∑_k y_{i_k}
+    A1 = [Fraction(0)] * (n1 + 1)
+    for k, i in enumerate(infeasible):
+        A1[0] += lp.C[i]
+        for j in range(n):
+            A1[j + 1] += lp.B[i][j]
+        A1[n + k + 1] = Fraction(-1)
+
+    phase1 = LinearProgram(B1, C1, A1)
+    phase1.nonbasic_vars = list(lp.nonbasic_vars) + [lp.basic_vars[i] for i in infeasible]
+    phase1.basic_vars = list(lp.basic_vars)
+    for k, i in enumerate(infeasible):
+        phase1.basic_vars[i] = n + m + k + 1   # artificial w_k
+    phase1.var_names = lp.var_names + [f'w_{{{k+1}}}' for k in range(p)]
+
+    return phase1
+
 
 def _default_editor_values(m: int, n: int) -> dict:
     return {
@@ -248,6 +313,72 @@ def build_editor_table(m: int, n: int, values: dict) -> html.Table:
         style={'borderCollapse': 'collapse', 'fontFamily': 'monospace', 'fontSize': '13px'},
     )
 
+# ── 2D inequality editor builder ─────────────────────────────────────────────
+
+def build_2d_editor_table(m: int, values: dict) -> html.Table:
+    a = values['a']   # m x 2 list of strings
+    b = values['b']   # m list of strings
+    c = values['c']   # [c1, c2] strings
+
+    header = html.Thead(html.Tr([
+        html.Th("", className="grey sep-r sep-b"),
+        html.Th(html.Span("x"), className="grey sep-b"),
+        html.Th(html.Span("y"), className="grey sep-b"),
+        html.Th("≤", className="grey sep-b"),
+        html.Th("b", className="grey sep-b"),
+    ]))
+
+    obj_row = html.Tr([
+        html.Th("max", className="grey sep-r sep-b"),
+        html.Td(
+            dcc.Input(id={'type': 'ed-2d-c', 'col': 0}, value=c[0],
+                      debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            className="sep-b",
+        ),
+        html.Td(
+            dcc.Input(id={'type': 'ed-2d-c', 'col': 1}, value=c[1],
+                      debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            className="sep-b",
+        ),
+        html.Td("", className="grey sep-b"),
+        html.Td("", className="grey sep-b"),
+    ])
+
+    con_rows = []
+    for i in range(m):
+        con_rows.append(html.Tr([
+            html.Th(html.Span(["s", html.Sub(str(i + 1))]), className="grey sep-r"),
+            html.Td(
+                dcc.Input(id={'type': 'ed-2d-a', 'row': i, 'col': 0}, value=a[i][0],
+                          debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            ),
+            html.Td(
+                dcc.Input(id={'type': 'ed-2d-a', 'row': i, 'col': 1}, value=a[i][1],
+                          debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            ),
+            html.Td("≤", className="grey", style={'textAlign': 'center'}),
+            html.Td(
+                dcc.Input(id={'type': 'ed-2d-b', 'row': i}, value=b[i],
+                          debounce=True, type='text', style=_CELL_INPUT_STYLE),
+            ),
+        ]))
+
+    footer_row = html.Tr(html.Td(
+        [
+            html.Button("+", id='btn-2d-add-row', n_clicks=0, style=_BTN_SMALL, title="Add constraint"),
+            html.Button("−", id='btn-2d-rem-row', n_clicks=0,
+                        style={**_BTN_SMALL, 'marginLeft': '4px'}, title="Remove constraint"),
+        ],
+        colSpan=5,
+        style={'paddingTop': '6px', 'borderTop': '1px solid #d0d0d0'},
+    ))
+
+    return html.Table(
+        [header, html.Tbody([obj_row, *con_rows, footer_row])],
+        id='editor-2d-table',
+        style={'borderCollapse': 'collapse', 'fontFamily': 'monospace', 'fontSize': '13px'},
+    )
+
 # ── Pivot table builder ───────────────────────────────────────────────────────
 
 def build_pivot_table(lp: LinearProgram, entering_s, leaving_r) -> html.Table:
@@ -289,7 +420,7 @@ def build_pivot_table(lp: LinearProgram, entering_s, leaving_r) -> html.Table:
         html.Th("", className="grey sep-r sep-b"),
         html.Th("const", className="grey sep-r sep-b"),
         *[
-            html.Th(xsub(lp.nonbasic_vars[s]), className=col_cls(s),
+            html.Th(var_html(lp._var_name(lp.nonbasic_vars[s])), className=col_cls(s),
                     id={'type': 'col-hdr', 'index': s}, n_clicks=0)
             for s in range(n)
         ],
@@ -311,7 +442,7 @@ def build_pivot_table(lp: LinearProgram, entering_s, leaving_r) -> html.Table:
     for i in range(m):
         bv = lp.basic_vars[i]
         con_rows.append(html.Tr([
-            html.Th(xsub(bv), className=row_cls(i),
+            html.Th(var_html(lp._var_name(bv)), className=row_cls(i),
                     id={'type': 'row-hdr', 'index': i}, n_clicks=0),
             html.Td(frac_str(lp.C[i]),
                     className="grey sep-r" + (" in-row" if i == leaving_r else "")),
@@ -419,6 +550,15 @@ main_area = html.Div([
         'A': ['0', '1', '1'],
     }),
     dcc.Store(id='original-lp'),
+    dcc.Store(id='constraints-2d'),
+    dcc.Store(id='phase-store'),
+    dcc.Store(id='editor-2d-meta', data={'m': 3}),
+    dcc.Store(id='editor-2d-values', data={
+        'a': [['1', '-1'], ['1', '0'], ['-1', '2']],
+        'b': ['3', '4', '5'],
+        'c': ['1', '1'],
+    }),
+    dcc.Store(id='editor-tab-store', data='table'),
     dcc.Store(id='font-size-store', data=12),
     dcc.Store(id='panel-mult-store', data=4),
     dcc.Store(id='panel-pad-store', data=20),
@@ -490,8 +630,11 @@ def render_page(pathname):
     Input('app-mode', 'data'),
     Input('editor-meta', 'data'),
     Input('editor-values', 'data'),
+    Input('editor-2d-meta', 'data'),
+    Input('editor-2d-values', 'data'),
+    State('editor-tab-store', 'data'),
 )
-def render_editor(app_mode, meta, values):
+def render_editor(app_mode, meta, values, meta_2d, values_2d, active_tab):
     if app_mode == 'view':
         return html.Div()
     m, n = meta['m'], meta['n']
@@ -532,9 +675,20 @@ def render_editor(app_mode, meta, values):
         ]),
     )
 
+    d2_tab = dcc.Tab(label='2D (inequalities)', value='2d', style=_etab, selected_style=_etab_sel,
+        children=html.Div([
+            html.P([
+                "Enter constraints as ", html.B("a₁·x₁ + a₂·x₂ ≤ b"),
+                " and an objective ", html.B("max c₁·x₁ + c₂·x₂"),
+                ". The app converts to slack form automatically.",
+            ], style={'fontSize': '12px', 'color': '#666', 'margin': '10px 0 10px'}),
+            build_2d_editor_table(meta_2d['m'], values_2d),
+        ]),
+    )
+
     return html.Div([
         html.H5("Define system", style={'marginBottom': '8px'}),
-        dcc.Tabs(id='editor-tabs', value='table', children=[table_tab, text_tab]),
+        dcc.Tabs(id='editor-tabs', value=active_tab or 'table', children=[table_tab, text_tab, d2_tab]),
         html.Button(
             "Generate →",
             id='btn-generate',
@@ -623,6 +777,59 @@ def rem_row(n_clicks, meta, B_vals, C_vals, A_vals):
         return no_update, no_update
     return {'m': m - 1, 'n': n}, {'B': B[:-1], 'C': C[:-1], 'A': A}
 
+# ── Callbacks: 2D editor resize ──────────────────────────────────────────────
+
+def _read_2d_state(meta_2d, a_vals, b_vals, c_vals):
+    m = meta_2d['m']
+    a = [[a_vals[i * 2 + j] or '0' for j in range(2)] for i in range(m)]
+    b = [v or '0' for v in b_vals]
+    c = [v or '0' for v in c_vals]
+    return m, a, b, c
+
+@app.callback(
+    Output('editor-2d-meta', 'data', allow_duplicate=True),
+    Output('editor-2d-values', 'data', allow_duplicate=True),
+    Input('btn-2d-add-row', 'n_clicks'),
+    State('editor-2d-meta', 'data'),
+    State({'type': 'ed-2d-a', 'row': ALL, 'col': ALL}, 'value'),
+    State({'type': 'ed-2d-b', 'row': ALL}, 'value'),
+    State({'type': 'ed-2d-c', 'col': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def add_row_2d(n, meta_2d, a_vals, b_vals, c_vals):
+    if not n:
+        return no_update, no_update
+    m, a, b, c = _read_2d_state(meta_2d, a_vals, b_vals, c_vals)
+    return {'m': m + 1}, {'a': a + [['0', '0']], 'b': b + ['0'], 'c': c}
+
+@app.callback(
+    Output('editor-2d-meta', 'data', allow_duplicate=True),
+    Output('editor-2d-values', 'data', allow_duplicate=True),
+    Input('btn-2d-rem-row', 'n_clicks'),
+    State('editor-2d-meta', 'data'),
+    State({'type': 'ed-2d-a', 'row': ALL, 'col': ALL}, 'value'),
+    State({'type': 'ed-2d-b', 'row': ALL}, 'value'),
+    State({'type': 'ed-2d-c', 'col': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def rem_row_2d(n, meta_2d, a_vals, b_vals, c_vals):
+    if not n:
+        return no_update, no_update
+    m, a, b, c = _read_2d_state(meta_2d, a_vals, b_vals, c_vals)
+    if m <= 1:
+        return no_update, no_update
+    return {'m': m - 1}, {'a': a[:-1], 'b': b[:-1], 'c': c}
+
+# ── Callback: persist active editor tab ───────────────────────────────────────
+
+@app.callback(
+    Output('editor-tab-store', 'data'),
+    Input('editor-tabs', 'value'),
+    prevent_initial_call=True,
+)
+def sync_editor_tab(tab):
+    return tab
+
 # ── Callbacks: text tab sync / apply ─────────────────────────────────────────
 
 @app.callback(
@@ -691,17 +898,50 @@ def validate_A(value):
     Output('app-mode', 'data', allow_duplicate=True),
     Output('history-store', 'data', allow_duplicate=True),
     Output('selection-store', 'data', allow_duplicate=True),
+    Output('constraints-2d', 'data', allow_duplicate=True),
+    Output('phase-store', 'data', allow_duplicate=True),
     Output('editor-msg', 'children'),
     Input('btn-generate', 'n_clicks'),
+    State('editor-tab-store', 'data'),
+    # Table/text tab inputs
     State('editor-meta', 'data'),
     State({'type': 'ed-B', 'row': ALL, 'col': ALL}, 'value'),
     State({'type': 'ed-C', 'row': ALL}, 'value'),
     State({'type': 'ed-A', 'col': ALL}, 'value'),
+    # 2D tab inputs
+    State('editor-2d-meta', 'data'),
+    State({'type': 'ed-2d-a', 'row': ALL, 'col': ALL}, 'value'),
+    State({'type': 'ed-2d-b', 'row': ALL}, 'value'),
+    State({'type': 'ed-2d-c', 'col': ALL}, 'value'),
     prevent_initial_call=True,
 )
-def generate_lp(n_clicks, meta, B_vals, C_vals, A_vals):
+def generate_lp(n_clicks, tab, meta, B_vals, C_vals, A_vals, meta_2d, a_vals, b_vals, c_vals):
+    _nu8 = (no_update,) * 8
     if not n_clicks:
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return _nu8
+
+    sel = {'entering_s': None, 'leaving_r': None}
+
+    if tab == '2d':
+        try:
+            m, a, b, c = _read_2d_state(meta_2d, a_vals, b_vals, c_vals)
+            c1 = parse_num(c[0])
+            c2 = parse_num(c[1])
+            A = [Fraction(0), c1, c2]
+            B_lp = [[-parse_num(a[i][0]), -parse_num(a[i][1])] for i in range(m)]
+            C_lp = [parse_num(b[i]) for i in range(m)]
+            var_names_2d = ['x', 'y'] + [f's_{{{i+1}}}' for i in range(m)]
+            lp = LinearProgram(B_lp, C_lp, A, var_names=var_names_2d)
+            lp_dict = lp_to_dict(lp)
+            constraints = {
+                'A_ub': [[float(parse_num(a[i][j])) for j in range(2)] for i in range(m)],
+                'b_ub': [float(parse_num(b[i])) for i in range(m)],
+                'c_obj': [float(c1), float(c2)],
+            }
+            return lp_dict, lp_dict, 'view', [], sel, constraints, None, html.Div()
+        except Exception as e:
+            return *_nu8[:7], html.Div(str(e), className="msg-error")
+
     m, n, B_str, C_str, A_str = _read_editor_state(meta, B_vals, C_vals, A_vals)
 
     errors = []
@@ -717,8 +957,7 @@ def generate_lp(n_clicks, meta, B_vals, C_vals, A_vals):
             errors.append(f"A[{j}]")
 
     if errors:
-        msg = html.Div(f"Invalid values: {', '.join(errors)}", className="msg-error")
-        return no_update, no_update, no_update, no_update, no_update, msg
+        return *_nu8[:7], html.Div(f"Invalid values: {', '.join(errors)}", className="msg-error")
 
     try:
         B = [[parse_num(B_str[i][j]) for j in range(n)] for i in range(m)]
@@ -726,10 +965,9 @@ def generate_lp(n_clicks, meta, B_vals, C_vals, A_vals):
         A = [parse_num(v) for v in A_str]
         lp = LinearProgram(B, C, A)
         lp_dict = lp_to_dict(lp)
-        sel = {'entering_s': None, 'leaving_r': None}
-        return lp_dict, lp_dict, 'view', [], sel, html.Div()
+        return lp_dict, lp_dict, 'view', [], sel, None, None, html.Div()
     except Exception as e:
-        return no_update, no_update, no_update, no_update, no_update, html.Div(str(e), className="msg-error")
+        return *_nu8[:7], html.Div(str(e), className="msg-error")
 
 # ── Callbacks: Edit original / Edit current ────────────────────────────────────
 
@@ -1016,8 +1254,10 @@ def undo(n_clicks, history):
     Input('lp-store', 'data'),
     Input('app-mode', 'data'),
     Input('font-size-store', 'data'),
+    Input('constraints-2d', 'data'),
+    Input('phase-store', 'data'),
 )
-def render_system(lp_data, app_mode, font_size):
+def render_system(lp_data, app_mode, font_size, constraints, phase):
     if app_mode == 'edit' or not lp_data:
         return html.Div()
 
@@ -1033,26 +1273,37 @@ def render_system(lp_data, app_mode, font_size):
     _tab_selected = {**_tab_style, 'fontWeight': 'bold', 'borderTop': '2px solid #1976d2',
                      'borderBottom': 'none', 'color': '#1976d2'}
 
-    feasibility_badge = html.Span(
-        "Feasible" if is_feasible else "Infeasible",
-        style={
-            'fontSize': '13px',
-            'fontWeight': 'bold',
-            'padding': '3px 10px',
-            'borderRadius': '10px',
-            'marginLeft': '10px',
-            'background': '#e8f5e9' if is_feasible else '#ffebee',
-            'color': '#2e7d32' if is_feasible else '#c62828',
-            'border': f"1px solid {'#a5d6a7' if is_feasible else '#ef9a9a'}",
-        },
-    )
+    _badge_base = {
+        'fontSize': '13px',
+        'fontWeight': 'bold',
+        'padding': '3px 10px',
+        'borderRadius': '10px',
+        'marginLeft': '10px',
+    }
+    if is_feasible:
+        feasibility_badge = html.Span("Feasible", style={
+            **_badge_base,
+            'background': '#e8f5e9', 'color': '#2e7d32', 'border': '1px solid #a5d6a7',
+        })
+    elif phase == 'phase1':
+        feasibility_badge = html.Span("Phase I — finding feasible basis", style={
+            **_badge_base,
+            'background': '#fff8e1', 'color': '#e65100', 'border': '1px solid #ffcc80',
+        })
+    else:
+        feasibility_badge = html.Button("⚠ Infeasible — click to run Phase I", id='btn-start-phase1',
+            n_clicks=0, style={
+                **_badge_base,
+                'background': '#ffebee', 'color': '#c62828', 'border': '1px solid #ef9a9a',
+                'cursor': 'pointer',
+            })
 
     eq_latex = lp._to_latex_array_mathjax()
     mat_latex = '$$\n' + lp.to_latex(matrix_form=True) + '\n$$'
 
     _md_style = {'paddingTop': '10px', 'paddingLeft': '20px', 'fontSize': f'{font_size}pt'}
 
-    section = html.Div([
+    algebra_panel = html.Div([
         html.Div([
             html.H5("Current system", style={'display': 'inline', 'marginBottom': '0'}),
             feasibility_badge,
@@ -1070,10 +1321,32 @@ def render_system(lp_data, app_mode, font_size):
                                 'background': 'none', 'border': 'none'}),
             ]),
         ]),
-        html.Hr(),
     ])
 
-    return section
+    if constraints:
+        import numpy as np
+        pt = lp.current_point()
+        current_xy = (float(pt.get(1, 0)), float(pt.get(2, 0)))
+        obj_val = float(lp.A[0])
+        fig = make_2d_figure(
+            np.array(constraints['A_ub']),
+            np.array(constraints['b_ub']),
+            constraints['c_obj'],
+            obj_val,
+            current_pt=current_xy,
+        )
+        diagram_panel = html.Div([
+            html.H5("Geometry", style={'marginBottom': '8px'}),
+            dcc.Graph(figure=fig, config={'displayModeBar': False}),
+        ], style={'minWidth': '420px'})
+
+        return html.Div([
+            html.Div([algebra_panel, diagram_panel],
+                     style={'display': 'flex', 'gap': '32px', 'alignItems': 'flex-start'}),
+            html.Hr(),
+        ])
+
+    return html.Div([algebra_panel, html.Hr()])
 
 # ── Callback: Controls section (fast — no pdflatex) ───────────────────────────
 
@@ -1082,8 +1355,9 @@ def render_system(lp_data, app_mode, font_size):
     Input('lp-store', 'data'),
     Input('selection-store', 'data'),
     Input('app-mode', 'data'),
+    Input('phase-store', 'data'),
 )
-def render_controls(lp_data, sel, app_mode):
+def render_controls(lp_data, sel, app_mode, phase):
     if app_mode == 'edit' or not lp_data:
         return html.Div()
 
@@ -1101,11 +1375,26 @@ def render_controls(lp_data, sel, app_mode):
     if is_unbounded:
         status = html.Div("LP appears unbounded.", className="msg-error")
     elif suggested is None:
-        sol = {f"x_{v}": frac_str(lp.C[i]) for i, v in enumerate(lp.basic_vars)}
-        sol.update({f"x_{v}": "0" for v in lp.nonbasic_vars})
-        sol_str = ", ".join(f"{k} = {v}" for k, v in sorted(sol.items()))
-        status = html.Div([html.B("Optimal! "), f"Objective = {frac_str(lp.A[0])}.  ", sol_str],
-                          className="msg-success")
+        if phase == 'phase1':
+            if lp.A[0] == 0:
+                status = html.Div([
+                    html.B("Phase I complete — feasible basis found.  "),
+                    html.Button("Return to original problem →", id='btn-phase2', n_clicks=0,
+                        style={'padding': '6px 16px', 'background': '#2e7d32', 'color': 'white',
+                               'border': 'none', 'borderRadius': '4px', 'cursor': 'pointer',
+                               'fontWeight': 'bold', 'marginLeft': '10px'}),
+                ], className="msg-success")
+            else:
+                status = html.Div(
+                    "Phase I optimal with objective < 0 — the original problem has no feasible solution.",
+                    className="msg-error",
+                )
+        else:
+            sol = {lp._var_name(v): frac_str(lp.C[i]) for i, v in enumerate(lp.basic_vars)}
+            sol.update({lp._var_name(v): "0" for v in lp.nonbasic_vars})
+            sol_str = ", ".join(f"{k} = {v}" for k, v in sorted(sol.items()))
+            status = html.Div([html.B("Optimal! "), f"Objective = {frac_str(lp.A[0])}.  ", sol_str],
+                              className="msg-success")
     else:
         status = html.Div()
 
@@ -1127,7 +1416,8 @@ def render_controls(lp_data, sel, app_mode):
                                     disabled=True, style={'opacity': '0.5', 'cursor': 'not-allowed',
                                                           'padding': '8px 20px', 'borderRadius': '4px'})
         else:
-            pivot_msg = html.Div(["Enter ", html.B(xsub(entering_v)), ", leave ", html.B(xsub(leaving_v)),
+            pivot_msg = html.Div(["Enter ", html.B(var_html(lp._var_name(entering_v))), ", leave ",
+                                   html.B(var_html(lp._var_name(leaving_v))),
                                    f"  (pivot = {frac_str(pivot_val)})"], className="msg-success")
             pivot_btn = html.Button("Perform pivot ↔", id='btn-pivot', n_clicks=0,
                                     style={'background': '#1976d2', 'color': 'white', 'border': 'none',
@@ -1137,7 +1427,7 @@ def render_controls(lp_data, sel, app_mode):
     basis_section = html.Div([
         html.Hr(),
         html.H6("Set basis"),
-        html.P([f"Current basis: {{", ", ".join([f"x{v}" for v in sorted(lp.basic_vars)]),
+        html.P([f"Current basis: {{", ", ".join([lp._var_name(v) for v in sorted(lp.basic_vars)]),
                 f"}}. Enter {lp.m} indices:"],
                style={'fontSize': '13px', 'marginBottom': '8px'}),
         dcc.Input(id='basis-input', value=", ".join(str(v) for v in lp.basic_vars),
@@ -1177,6 +1467,52 @@ def render_controls(lp_data, sel, app_mode):
         basis_section,
         auto_section,
     ])
+
+# ── Callbacks: Phase I / Phase II ─────────────────────────────────────────────
+
+@app.callback(
+    Output('lp-store', 'data', allow_duplicate=True),
+    Output('original-lp', 'data', allow_duplicate=True),
+    Output('phase-store', 'data', allow_duplicate=True),
+    Output('history-store', 'data', allow_duplicate=True),
+    Output('selection-store', 'data', allow_duplicate=True),
+    Input('btn-start-phase1', 'n_clicks'),
+    State('lp-store', 'data'),
+    prevent_initial_call=True,
+)
+def start_phase1(n_clicks, lp_data):
+    if not n_clicks or not lp_data:
+        return no_update, no_update, no_update, no_update, no_update
+    lp = dict_to_lp(lp_data)
+    phase1_lp = build_phase1_lp(lp)
+    sel = {'entering_s': None, 'leaving_r': None}
+    return lp_to_dict(phase1_lp), lp_data, 'phase1', [], sel
+
+
+@app.callback(
+    Output('lp-store', 'data', allow_duplicate=True),
+    Output('phase-store', 'data', allow_duplicate=True),
+    Output('history-store', 'data', allow_duplicate=True),
+    Output('selection-store', 'data', allow_duplicate=True),
+    Input('btn-phase2', 'n_clicks'),
+    State('lp-store', 'data'),
+    State('original-lp', 'data'),
+    prevent_initial_call=True,
+)
+def jump_to_phase2(n_clicks, phase1_data, original_data):
+    if not n_clicks or not phase1_data or not original_data:
+        return no_update, no_update, no_update, no_update
+    phase1_lp = dict_to_lp(phase1_data)
+    orig_lp = dict_to_lp(original_data)
+    # Extract the feasible basis: Phase I basic vars that belong to the original LP
+    n_orig = orig_lp.n + orig_lp.m
+    feasible_basis = [v for v in phase1_lp.basic_vars if v <= n_orig]
+    try:
+        orig_lp.set_basis(feasible_basis)
+    except Exception:
+        pass  # Degenerate case: use whatever basis we have
+    sel = {'entering_s': None, 'leaving_r': None}
+    return lp_to_dict(orig_lp), None, [], sel
 
 # ── Callback: History panel ────────────────────────────────────────────────────
 

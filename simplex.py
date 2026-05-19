@@ -108,7 +108,7 @@ class LinearProgram:
     Variables are tracked by their global 1-based index.
     """
 
-    def __init__(self, B: ArrayLike, C: ArrayLike, A: ArrayLike) -> None:
+    def __init__(self, B: ArrayLike, C: ArrayLike, A: ArrayLike, var_names: None|list[str] = None) -> None:
         """
         Construct the LP.
 
@@ -130,6 +130,12 @@ class LinearProgram:
 
         self.m: int = len(self.C)
         self.n: int = len(self.A) - 1
+        if var_names is None:
+            var_names = []
+        all_names = list(var_names)
+        for i in range(len(all_names) + 1, self.n + self.m + 1):
+            all_names.append(f'x_{{{i}}}')
+        self.var_names = all_names  # 0-indexed: var_names[k] is the name for variable k+1
 
         if len(self.B) != self.m:
             raise ValueError(f"B has {len(self.B)} rows but C has length {self.m}")
@@ -140,6 +146,14 @@ class LinearProgram:
         # Global 1-based variable indices: non-basics = 1..n, basics = n+1..n+m
         self.nonbasic_vars: list[int] = list(range(1, self.n + 1))
         self.basic_vars: list[int] = list(range(self.n + 1, self.n + self.m + 1))
+
+    # ------------------------------------------------------------------
+    # Variable name helper
+    # ------------------------------------------------------------------
+
+    def _var_name(self, global_idx: int) -> str:
+        """Return the display name for a 1-based global variable index."""
+        return self.var_names[global_idx - 1]
 
     # ------------------------------------------------------------------
     # Core pivot
@@ -165,17 +179,17 @@ class LinearProgram:
         try:
             r = self.basic_vars.index(basic_idx)
         except ValueError:
-            raise ValueError(f"x_{basic_idx} is not in the current basis")
+            raise ValueError(f"{self._var_name(basic_idx)} is not in the current basis")
         try:
             s = self.nonbasic_vars.index(nonbasic_idx)
         except ValueError:
-            raise ValueError(f"x_{nonbasic_idx} is not a current non-basic variable")
+            raise ValueError(f"{self._var_name(nonbasic_idx)} is not a current non-basic variable")
 
         pivot = self.B[r][s]
         if pivot == 0:
             raise ValueError(
                 f"Degenerate pivot: B[{r}][{s}] = 0 "
-                f"(x_{basic_idx} leaving, x_{nonbasic_idx} entering)"
+                f"({self._var_name(basic_idx)} leaving, {self._var_name(nonbasic_idx)} entering)"
             )
 
         # Snapshot old values before any mutation to avoid update-order bugs.
@@ -265,7 +279,7 @@ class LinearProgram:
         valid_rows = [i for i in range(self.m) if self.B[i][entering_s] < 0]
         if not valid_rows:
             raise ValueError(
-                f"LP is unbounded: x_{self.nonbasic_vars[entering_s]} can increase "
+                f"LP is unbounded: {self._var_name(self.nonbasic_vars[entering_s])} can increase "
                 "without bound (no binding constraint)."
             )
 
@@ -346,7 +360,7 @@ class LinearProgram:
                 ]
                 if not eligible:
                     raise ValueError(
-                        f"Cannot pivot x_{target_var} into the basis: "
+                        f"Cannot pivot {self._var_name(target_var)} into the basis: "
                         "all eligible rows have a zero coefficient "
                         "(the target basis may not be achievable)."
                     )
@@ -396,8 +410,7 @@ class LinearProgram:
         for c, v in zip(coeffs, var_indices):
             if c == 0:
                 continue
-            var = f'x_{{{v}}}'
-            terms.append(_term_latex(c, var, not terms))
+            terms.append(_term_latex(c, self._var_name(v), not terms))
 
         return ''.join(terms) if terms else '0'
 
@@ -420,7 +433,7 @@ class LinearProgram:
                 [self.B[i][j] for j in range(self.n)],
                 self.nonbasic_vars,
             )
-            lines.append(f'& x_{{{bv}}} = {rhs}')
+            lines.append(f'& {self._var_name(bv)} = {rhs}')
 
         lines.append(r'& x_i \geq 0 \quad \forall i')
         lines[1] = r'\text{s.t.}\quad ' + lines[1]  # Add "s.t." to the first constraint line.
@@ -445,7 +458,7 @@ class LinearProgram:
                     abs_c = abs(c)
                     coeff_str = '' if abs_c == 1 else _frac_to_latex(abs_c)
                     cells.append(sign)
-                    cells.append(f'{coeff_str}x_{{{v}}}')
+                    cells.append(f'{coeff_str}{self._var_name(v)}')
             return ' & '.join(cells)
 
         rows: list[str] = []
@@ -462,7 +475,7 @@ class LinearProgram:
             bv = self.basic_vars[i]
             prefix = r'\text{s.t.}\quad &' if i == 0 else '&'
             rows.append(build_row(
-                prefix + f'x_{{{bv}}} =',
+                prefix + f'{self._var_name(bv)} =',
                 self.C[i],
                 [self.B[i][j] for j in range(n)],
             ))
@@ -496,7 +509,7 @@ class LinearProgram:
                     sign = r'\;+\;' if c > 0 else r'\;-\;'
                     abs_c = abs(c)
                     coeff_str = '' if abs_c == 1 else _frac_to_latex(abs_c)
-                    cells.extend([sign, f'{coeff_str}x_{{{v}}}'])
+                    cells.extend([sign, f'{coeff_str}{self._var_name(v)}'])
             return cells
 
         rows: list[str] = []
@@ -510,7 +523,7 @@ class LinearProgram:
             bv = self.basic_vars[i]
             label = r'\text{s.t.}\quad' if i == 0 else ''
             rows.append(' & '.join(build_cells(
-                label, f'x_{{{bv}}}', r'=\;',
+                label, self._var_name(bv), r'=\;',
                 self.C[i], [self.B[i][j] for j in range(n)],
             )))
 
@@ -531,8 +544,8 @@ class LinearProgram:
         )
 
         # Column vectors for non-basic (x) and basic (y) variables
-        x_vec = _col_vec_latex([f'x_{{{v}}}' for v in self.nonbasic_vars])
-        y_vec = _col_vec_latex([f'x_{{{v}}}' for v in self.basic_vars])
+        x_vec = _col_vec_latex([self._var_name(v) for v in self.nonbasic_vars])
+        y_vec = _col_vec_latex([self._var_name(v) for v in self.basic_vars])
 
         # B matrix and C column vector
         B_latex = _matrix_to_latex(self.B)
@@ -545,10 +558,12 @@ class LinearProgram:
         else:
             obj_line = r'\max \quad & ' + const + ' + ' + a_row_latex + x_vec
 
+        first_name = self._var_name(1)
+        last_name = self._var_name(self.n + self.m)
         lines = [
             obj_line,
             r'\text{s.t.} \quad & ' + y_vec + ' = ' + C_vec + ' + ' + B_latex + x_vec,
-            r'& x_1, \ldots, x_{' + str(self.n + self.m) + r'} \geq 0',
+            r'& ' + first_name + r', \ldots, ' + last_name + r' \geq 0',
         ]
         body = ' \\\\\n'.join(lines)
         return f'\\begin{{align*}}\n{body}\n\\end{{align*}}'
@@ -557,6 +572,16 @@ class LinearProgram:
     # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
+
+    def current_point(self) -> dict:
+        """
+        Return the current basic feasible solution as {global_var_index: Fraction}.
+        Non-basic variables are 0; basic variables take their value from C.
+        """
+        point = {v: Fraction(0) for v in self.nonbasic_vars}
+        for i, v in enumerate(self.basic_vars):
+            point[v] = self.C[i]
+        return point
 
     def to_float(self) -> dict:
         """
@@ -580,8 +605,8 @@ class LinearProgram:
 
     def __repr__(self) -> str:
         obj_val = float(self.A[0])
-        basic_str = ', '.join(f'x{v}' for v in self.basic_vars)
-        nonbasic_str = ', '.join(f'x{v}' for v in self.nonbasic_vars)
+        basic_str = ', '.join(self._var_name(v) for v in self.basic_vars)
+        nonbasic_str = ', '.join(self._var_name(v) for v in self.nonbasic_vars)
         return (
             f'LinearProgram(m={self.m}, n={self.n}, '
             f'obj={obj_val:.6g}, '
