@@ -13,7 +13,8 @@ make_2d_figure(A_ub, b_ub, c_obj, obj_val, current_pt) -> go.Figure
     Plotly figure with traces in a fixed order:
       [0] filled feasible polygon
       [1] dashed objective line
-      [2] vertex markers (current_pt highlighted gold)
+      [2] vertex markers (uniform blue)
+      [3] current point marker (gold diamond; empty placeholder when out of range or absent)
 """
 from __future__ import annotations
 
@@ -99,12 +100,14 @@ def make_2d_figure(
     current_pt: tuple[float, float] | None = None,
 ) -> go.Figure:
     """
-    Build a Plotly figure with exactly three traces (fixed indices for external
-    callbacks to update):
+    Build a Plotly figure with four traces in fixed order:
 
       [0] Filled feasible region polygon
       [1] Dashed objective line at obj_val (empty placeholder when off-screen)
-      [2] Feasible vertex markers; current_pt highlighted gold
+      [2] Feasible vertex markers (uniform blue; indices [0,1,2] are stable for
+          the instructions clientside callback)
+      [3] Current point marker — gold diamond at current_pt if it is within the
+          diagram range, otherwise an empty placeholder
 
     Returns a figure with an infeasibility annotation and no data traces when
     the feasible region is empty.
@@ -122,9 +125,13 @@ def make_2d_figure(
         fig.update_layout(height=420, plot_bgcolor='white', paper_bgcolor='white')
         return fig
 
-    pad = max(float(verts.max() - verts.min()) * 0.2, 1.0)
-    lo = float(max(verts.min() - pad, -0.5))
-    hi = float(verts.max() + pad)
+    all_pts = list(verts.flatten())
+    if current_pt is not None:
+        all_pts += [float(current_pt[0]), float(current_pt[1])]
+    arr = np.array(all_pts)
+    pad = max(float(arr.max() - arr.min()) * 0.2, 1.0)
+    lo = float(arr.min() - pad)
+    hi = float(arr.max() + pad)
     xlim = ylim = (lo, hi)
 
     # Trace 0: feasible region fill
@@ -139,8 +146,10 @@ def make_2d_figure(
         hoverinfo='skip',
     ))
 
-    # Trace 1: objective line (placeholder when off-screen to keep trace index stable)
-    eps = objective_line_endpoints(c_obj, obj_val, xlim, ylim)
+    # Trace 1: objective line clipped to a large box so it stays visible after panning
+    span = hi - lo
+    far = lo - 20 * span, hi + 20 * span
+    eps = objective_line_endpoints(c_obj, obj_val, far, far)
     c0, c1 = float(c_obj[0]), float(c_obj[1])
     if eps:
         lx, ly = zip(*eps)
@@ -148,50 +157,54 @@ def make_2d_figure(
             x=list(lx), y=list(ly),
             mode='lines',
             line=dict(color='crimson', width=2.5, dash='dash'),
-            name=f'{c0:g}·x₁ + {c1:g}·x₂ = {obj_val:.3g}',
+            name=f'{c0:g}·x + {c1:g}·y = {obj_val:.3g}',
         ))
     else:
         fig.add_trace(go.Scatter(x=[], y=[], mode='lines', showlegend=False))
 
-    # Trace 2: vertex markers
-    colors, sizes, line_colors = [], [], []
-    for v in verts:
-        is_current = (
-            current_pt is not None
-            and abs(float(v[0]) - float(current_pt[0])) < 1e-6
-            and abs(float(v[1]) - float(current_pt[1])) < 1e-6
-        )
-        if is_current:
-            colors.append('gold')
-            sizes.append(16)
-            line_colors.append('darkorange')
-        else:
-            colors.append('royalblue')
-            sizes.append(9)
-            line_colors.append('royalblue')
-
+    # Trace 2: vertex markers (uniform style; current point is shown separately in trace 3)
     fig.add_trace(go.Scatter(
         x=[float(v[0]) for v in verts],
         y=[float(v[1]) for v in verts],
         mode='markers',
         marker=dict(
-            size=sizes, color=colors,
-            line=dict(color=line_colors, width=2),
+            size=9, color='royalblue',
+            line=dict(color='royalblue', width=2),
         ),
-        name='Vertices',
+        showlegend=False,
         hovertemplate='(%{x:.3g}, %{y:.3g})<extra></extra>',
     ))
 
+    # Trace 3: current point — gold diamond, always shown when present
+    if current_pt is not None:
+        cx, cy = float(current_pt[0]), float(current_pt[1])
+        fig.add_trace(go.Scatter(
+            x=[cx], y=[cy],
+            mode='markers',
+            marker=dict(
+                symbol='diamond',
+                size=14, color='gold',
+                line=dict(color='darkorange', width=2),
+            ),
+            name='Current point',
+            hovertemplate='Current: (%{x:.3g}, %{y:.3g})<extra></extra>',
+        ))
+    else:
+        fig.add_trace(go.Scatter(x=[], y=[], mode='markers', showlegend=False))
+
     fig.update_layout(
         xaxis=dict(
-            range=list(xlim), title='x₁',
-            zeroline=True, zerolinewidth=1, zerolinecolor='#aaa',
+            range=list(xlim), title='x',
+            showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.4)',
+            zeroline=True, zerolinewidth=2, zerolinecolor='#888',
         ),
         yaxis=dict(
-            range=list(ylim), title='x₂',
-            zeroline=True, zerolinewidth=1, zerolinecolor='#aaa',
+            range=list(ylim), title='y',
+            showgrid=True, gridwidth=1, gridcolor='rgba(180,180,180,0.4)',
+            zeroline=True, zerolinewidth=2, zerolinecolor='#888',
             scaleanchor='x',
         ),
+        dragmode='pan',
         margin=dict(l=40, r=20, t=30, b=40),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
         height=420,
